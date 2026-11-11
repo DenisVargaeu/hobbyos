@@ -2,6 +2,7 @@
 
 typedef struct {
     u8 *pixels;
+    u8 *display_pixels;
     u32 pitch;
     u32 width;
     u32 height;
@@ -27,8 +28,10 @@ typedef struct {
 #define MAX_APP_WINDOWS 6
 #define WINDOW_TITLE_HEIGHT 28
 #define TASKBAR_HEIGHT 36
+#define BACKBUFFER_CAPACITY (1280u * 1024u * 4u)
 
 static framebuffer_t framebuffer;
+static u8 framebuffer_backbuffer[BACKBUFFER_CAPACITY];
 static int file_menu_open;
 static int power_menu_open;
 static u8 requested_power_action;
@@ -76,6 +79,53 @@ static void draw_app_panel(u8 app, u32 x, u32 y, u32 width, u32 height);
 
 static void fill_rect(u32 x, u32 y, u32 width, u32 height,
                       u8 red, u8 green, u8 blue);
+
+static void flush_region(u32 x, u32 y, u32 width, u32 height)
+{
+    if (framebuffer.pixels == framebuffer.display_pixels || width == 0 || height == 0) {
+        return;
+    }
+
+    u32 right = x + width;
+    u32 bottom = y + height;
+    if (right < x || right > framebuffer.width) right = framebuffer.width;
+    if (bottom < y || bottom > framebuffer.height) bottom = framebuffer.height;
+    if (clip_enabled) {
+        if (x < clip_left) x = clip_left;
+        if (y < clip_top) y = clip_top;
+        if (right > clip_right) right = clip_right;
+        if (bottom > clip_bottom) bottom = clip_bottom;
+    }
+    if (x >= right || y >= bottom) {
+        return;
+    }
+
+    u32 bytes = (right - x) * framebuffer.bytes_per_pixel;
+    for (u32 row = y; row < bottom; ++row) {
+        const u8 *source = framebuffer.pixels + row * framebuffer.pitch +
+                           x * framebuffer.bytes_per_pixel;
+        u8 *destination = framebuffer.display_pixels + row * framebuffer.pitch +
+                          x * framebuffer.bytes_per_pixel;
+        for (u32 column = 0; column < bytes; ++column) {
+            destination[column] = source[column];
+        }
+    }
+}
+
+static void flush_cursor_region(i32 x, i32 y)
+{
+    i32 right = x + 7;
+    i32 bottom = y + 7;
+    if (right <= 0 || bottom <= 0 || x >= (i32)framebuffer.width ||
+        y >= (i32)framebuffer.height) {
+        return;
+    }
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (right > (i32)framebuffer.width) right = (i32)framebuffer.width;
+    if (bottom > (i32)framebuffer.height) bottom = (i32)framebuffer.height;
+    flush_region((u32)x, (u32)y, (u32)(right - x), (u32)(bottom - y));
+}
 
 static const u8 *glyph_rows(char character)
 {
@@ -239,6 +289,7 @@ static void redraw_desktop_region(u32 x, u32 y, u32 width, u32 height)
     clip_enabled = 1;
     framebuffer_draw_desktop();
     clip_enabled = 0;
+    flush_region(x, y, width, height);
 }
 
 static void redraw_window_region(u32 index)
@@ -302,7 +353,8 @@ int framebuffer_initialize(u64 multiboot_info_address)
                 return 0;
             }
 
-            framebuffer.pixels = (u8 *)(uptr)address;
+            framebuffer.display_pixels = (u8 *)(uptr)address;
+            framebuffer.pixels = framebuffer.display_pixels;
             framebuffer.pitch = pitch;
             framebuffer.width = width;
             framebuffer.height = height;
@@ -317,6 +369,9 @@ int framebuffer_initialize(u64 multiboot_info_address)
                 framebuffer.red_size == 0 || framebuffer.green_size == 0 ||
                 framebuffer.blue_size == 0) {
                 return 0;
+            }
+            if ((u64)pitch * height <= sizeof(framebuffer_backbuffer)) {
+                framebuffer.pixels = framebuffer_backbuffer;
             }
             return 1;
         }
@@ -358,6 +413,7 @@ void framebuffer_draw_boot_screen(void)
     draw_text(panel_x + 34, panel_y + 144, "LOADING DESKTOP", 157, 174, 181);
     draw_text(panel_x + 34, panel_y + 168, "VERSION " NOVA_VERSION, 157, 174, 181);
     fill_rect(panel_x + 34, panel_y + 184, panel_width - 68, 12, 17, 25, 33);
+    flush_region(0, 0, framebuffer.width, framebuffer.height);
 }
 
 void framebuffer_draw_boot_progress(u32 step)
@@ -369,6 +425,7 @@ void framebuffer_draw_boot_progress(u32 step)
     u32 filled = (progress_width * step) / 20;
     fill_rect(panel_x + 36, panel_y + 186, progress_width, 8, 17, 25, 33);
     fill_rect(panel_x + 36, panel_y + 186, filled, 8, 49, 175, 130);
+    flush_region(panel_x + 34, panel_y + 184, panel_width - 68, 12);
 }
 
 static void draw_top_bar(void)
@@ -611,6 +668,9 @@ void framebuffer_calculator_input(char character)
     }
     calculator_input(character);
     draw_app_window((u32)focused_window);
+    flush_region(app_windows[focused_window].x, app_windows[focused_window].y,
+                 app_windows[focused_window].width + 6,
+                 app_windows[focused_window].height + 6);
 }
 
 static void draw_note_text(u32 panel_x, u32 panel_y, u32 panel_width, u32 panel_height)
@@ -768,6 +828,9 @@ void framebuffer_note_input(char character)
     }
 
     draw_app_window((u32)focused_window);
+    flush_region(app_windows[focused_window].x, app_windows[focused_window].y,
+                 app_windows[focused_window].width + 6,
+                 app_windows[focused_window].height + 6);
 }
 
 static void draw_app_menu(void)
@@ -808,6 +871,9 @@ void framebuffer_draw_desktop(void)
     if (power_menu_open) {
         draw_power_menu();
     }
+    if (!clip_enabled) {
+        flush_region(0, 0, framebuffer.width, framebuffer.height);
+    }
 }
 
 void framebuffer_draw_pointer_status(i32 x, i32 y)
@@ -831,6 +897,10 @@ void framebuffer_draw_pointer_status(i32 x, i32 y)
               144, TASKBAR_HEIGHT, 17, 25, 33);
     draw_text(framebuffer.width - 136, framebuffer.height - 22,
               position, 157, 174, 181);
+    if (!clip_enabled) {
+        flush_region(framebuffer.width - 144, framebuffer.height - TASKBAR_HEIGHT,
+                     144, TASKBAR_HEIGHT);
+    }
 }
 
 u8 framebuffer_take_power_action(void)
@@ -1075,6 +1145,7 @@ void framebuffer_xor_cursor(i32 x, i32 y)
             }
         }
         cursor_visible = 0;
+        flush_cursor_region(cursor_x_saved, cursor_y_saved);
         if (x == cursor_x_saved && y == cursor_y_saved) {
             return;
         }
@@ -1103,4 +1174,5 @@ void framebuffer_xor_cursor(i32 x, i32 y)
         }
     }
     cursor_visible = 1;
+    flush_cursor_region(cursor_x_saved, cursor_y_saved);
 }

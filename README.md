@@ -5,11 +5,12 @@ which loads the ELF64 kernel, creates identity mappings for the first 4 GiB,
 and switches the processor into long mode. The freestanding C kernel draws a
 graphical desktop using the RGB framebuffer supplied by GRUB.
 
-Current version: **1.2.0**. The version is shown on the boot splash and in About OS.
+Current version: **1.3.0**. The version is shown on the boot splash and in About OS.
 
 The desktop includes a boot splash, navbar, app drawer, taskbar, and a basic
-window manager. Window operations redraw only the changed screen areas to keep
-the desktop steady while moving, focusing, opening, or closing windows. Files,
+window manager. Changes are composed in a RAM backbuffer and only the finished
+dirty region is copied to the display, avoiding visible partial redraws while
+moving, focusing, opening, or closing windows. Files,
 Notes, Calculator, Terminal, and About OS can stay open in separate windows at
 the same time. Click a titlebar to focus and drag a window, use its minus button
 to minimize it, or its X button to close it.
