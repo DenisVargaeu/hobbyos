@@ -16,9 +16,24 @@ typedef struct {
 
 static framebuffer_t framebuffer;
 static int file_menu_open;
+static int power_menu_open;
+static u8 requested_power_action;
 static u8 active_app;
 static char note_text[256];
 static u32 note_length;
+static i32 calculator_value;
+static i32 calculator_left;
+static char calculator_operator;
+static int calculator_entering;
+static int calculator_error;
+static int cursor_visible;
+static i32 cursor_x_saved;
+static i32 cursor_y_saved;
+static u8 cursor_saved_pixels[7 * 7 * 4];
+
+static const u8 cursor_shape[7] = {
+    0x1C, 0x3E, 0x7F, 0x7F, 0x7F, 0x3E, 0x1C
+};
 
 enum {
     APP_DESKTOP,
@@ -59,6 +74,11 @@ static const u8 *glyph_rows(char character)
         {14, 17, 17, 14, 17, 17, 14}, {14, 17, 17, 15, 1, 1, 14}
     };
     static const u8 space[7] = {0, 0, 0, 0, 0, 0, 0};
+    static const u8 plus[7] = {0, 4, 4, 31, 4, 4, 0};
+    static const u8 minus[7] = {0, 0, 0, 31, 0, 0, 0};
+    static const u8 multiply[7] = {0, 17, 10, 4, 10, 17, 0};
+    static const u8 divide[7] = {1, 2, 4, 8, 16, 0, 4};
+    static const u8 equals[7] = {0, 0, 31, 0, 31, 0, 0};
 
     if (character >= 'a' && character <= 'z') {
         character = (char)(character - 'a' + 'A');
@@ -68,6 +88,21 @@ static const u8 *glyph_rows(char character)
     }
     if (character >= '0' && character <= '9') {
         return glyphs[26 + character - '0'];
+    }
+    if (character == '+') {
+        return plus;
+    }
+    if (character == '-') {
+        return minus;
+    }
+    if (character == '*') {
+        return multiply;
+    }
+    if (character == '/') {
+        return divide;
+    }
+    if (character == '=') {
+        return equals;
     }
     if (character < 'A' || character > 'Z') {
         return space;
@@ -217,6 +252,36 @@ u32 framebuffer_height(void)
     return framebuffer.height;
 }
 
+void framebuffer_draw_boot_screen(void)
+{
+    fill_rect(0, 0, framebuffer.width, framebuffer.height, 18, 27, 35);
+
+    u32 panel_width = framebuffer.width > 480 ? 420 : framebuffer.width - 32;
+    u32 panel_height = 230;
+    u32 panel_x = (framebuffer.width - panel_width) / 2;
+    u32 panel_y = (framebuffer.height - panel_height) / 2;
+    fill_rect(panel_x + 5, panel_y + 6, panel_width, panel_height, 9, 15, 20);
+    fill_rect(panel_x, panel_y, panel_width, panel_height, 33, 47, 57);
+    fill_rect(panel_x, panel_y, panel_width, 4, 49, 175, 130);
+    fill_rect(panel_x + 32, panel_y + 34, 52, 52, 49, 175, 130);
+    fill_rect(panel_x + 45, panel_y + 47, 26, 26, 230, 238, 240);
+    draw_text(panel_x + 102, panel_y + 42, "NOVA OS", 230, 238, 240);
+    draw_text(panel_x + 34, panel_y + 112, "STARTING SYSTEM", 220, 230, 232);
+    draw_text(panel_x + 34, panel_y + 144, "LOADING DESKTOP", 157, 174, 181);
+    fill_rect(panel_x + 34, panel_y + 184, panel_width - 68, 12, 17, 25, 33);
+}
+
+void framebuffer_draw_boot_progress(u32 step)
+{
+    u32 panel_width = framebuffer.width > 480 ? 420 : framebuffer.width - 32;
+    u32 panel_x = (framebuffer.width - panel_width) / 2;
+    u32 panel_y = (framebuffer.height - 230) / 2;
+    u32 progress_width = panel_width - 72;
+    u32 filled = (progress_width * step) / 20;
+    fill_rect(panel_x + 36, panel_y + 186, progress_width, 8, 17, 25, 33);
+    fill_rect(panel_x + 36, panel_y + 186, filled, 8, 49, 175, 130);
+}
+
 static void draw_top_bar(void)
 {
     fill_rect(0, 0, framebuffer.width, 40, 17, 25, 33);
@@ -226,6 +291,31 @@ static void draw_top_bar(void)
     fill_rect(148, 4, 96, 32, file_menu_open ? 49 : 31,
              file_menu_open ? 175 : 44, file_menu_open ? 130 : 55);
     draw_text(164, 13, "APPS", 245, 247, 250);
+    u32 power_x = framebuffer.width > 140 ? framebuffer.width - 128 : 252;
+    fill_rect(power_x, 4, 112, 32, power_menu_open ? 49 : 31,
+              power_menu_open ? 175 : 44, power_menu_open ? 130 : 55);
+    draw_text(power_x + 14, 13, "POWER", 245, 247, 250);
+}
+
+static u32 power_menu_x(void)
+{
+    return framebuffer.width > 200 ? framebuffer.width - 192 : 8;
+}
+
+static void draw_power_menu(void)
+{
+    u32 x = power_menu_x();
+    fill_rect(x + 4, 45, 180, 90, 10, 16, 22);
+    fill_rect(x, 40, 180, 90, 33, 47, 57);
+    draw_text(x + 14, 50, "RESTART", 220, 230, 232);
+    fill_rect(x + 12, 78, 154, 1, 70, 87, 96);
+    draw_text(x + 14, 91, "SHUTDOWN", 220, 230, 232);
+}
+
+static void clear_power_menu(void)
+{
+    u32 x = power_menu_x();
+    fill_rect(x, 40, 184, 96, DESKTOP_RED, DESKTOP_GREEN, DESKTOP_BLUE);
 }
 
 static void get_app_panel_bounds(u32 *x, u32 *y, u32 *width, u32 *height)
@@ -235,6 +325,141 @@ static void get_app_panel_bounds(u32 *x, u32 *y, u32 *width, u32 *height)
     *x = (framebuffer.width - *width) / 2;
     u32 available_height = framebuffer.height > 68 ? framebuffer.height - 68 : framebuffer.height;
     *y = (available_height - *height) / 2 + 40;
+}
+
+static u32 append_signed(char *text, u32 offset, i32 value)
+{
+    u32 magnitude;
+    if (value < 0) {
+        text[offset++] = '-';
+        magnitude = (u32)(-(i64)value);
+    } else {
+        magnitude = (u32)value;
+    }
+    return append_number(text, offset, magnitude);
+}
+
+static void draw_calculator(u32 panel_x, u32 panel_y, u32 panel_width)
+{
+    static const char *labels[4][4] = {
+        {"7", "8", "9", "/"},
+        {"4", "5", "6", "*"},
+        {"1", "2", "3", "-"},
+        {"CLR", "0", "=", "+"}
+    };
+
+    draw_text(panel_x + 22, panel_y + 26, "CALCULATOR", 220, 230, 232);
+    fill_rect(panel_x + 22, panel_y + 54, panel_width - 44, 36, 17, 25, 33);
+
+    char display[32];
+    u32 length = 0;
+    if (calculator_error) {
+        display[0] = 'E'; display[1] = 'R'; display[2] = 'R';
+        display[3] = 'O'; display[4] = 'R'; display[5] = '\0';
+    } else {
+        if (calculator_operator != 0) {
+            length = append_signed(display, length, calculator_left);
+            display[length++] = ' ';
+            display[length++] = calculator_operator;
+            display[length++] = ' ';
+        }
+        length = append_signed(display, length, calculator_value);
+        display[length] = '\0';
+    }
+    draw_text(panel_x + 34, panel_y + 68, display, 230, 238, 240);
+
+    u32 button_width = (panel_width - 44) / 4;
+    for (u32 row = 0; row < 4; ++row) {
+        for (u32 column = 0; column < 4; ++column) {
+            u32 button_x = panel_x + 22 + column * button_width;
+            u32 button_y = panel_y + 98 + row * 28;
+            int is_operator = column == 3 ||
+                              (row == 3 && (column == 0 || column == 2));
+            fill_rect(button_x + 2, button_y, button_width - 6, 24,
+                      is_operator ? 49 : 24,
+                      is_operator ? 96 : 34,
+                      is_operator ? 85 : 43);
+            draw_text(button_x + 14, button_y + 7, labels[row][column],
+                      240, 244, 246);
+        }
+    }
+}
+
+static void calculator_input(char character)
+{
+    if (character >= '0' && character <= '9') {
+        if (calculator_error) {
+            calculator_value = 0;
+            calculator_left = 0;
+            calculator_operator = 0;
+            calculator_entering = 0;
+            calculator_error = 0;
+        }
+        u32 digit = (u32)(character - '0');
+        if (!calculator_entering) {
+            calculator_value = 0;
+            calculator_entering = 1;
+        }
+        if (calculator_value > 214748364 ||
+            (calculator_value == 214748364 && digit > 7)) {
+            calculator_error = 1;
+        } else {
+            calculator_value = calculator_value * 10 + (i32)digit;
+        }
+    } else if (character == 'c' || character == 'C' || character == '\b') {
+        calculator_value = 0;
+        calculator_left = 0;
+        calculator_operator = 0;
+        calculator_entering = 0;
+        calculator_error = 0;
+    } else if (character == '=' && calculator_operator != 0 && !calculator_error) {
+        i64 result;
+        if (calculator_operator == '+') {
+            result = (i64)calculator_left + calculator_value;
+        } else if (calculator_operator == '-') {
+            result = (i64)calculator_left - calculator_value;
+        } else if (calculator_operator == '*') {
+            result = (i64)calculator_left * calculator_value;
+        } else {
+            if (calculator_value == 0) {
+                calculator_error = 1;
+                result = 0;
+            } else {
+                result = calculator_left / calculator_value;
+            }
+        }
+        if (result > 2147483647LL || result < -2147483647LL - 1) {
+            calculator_error = 1;
+        } else if (!calculator_error) {
+            calculator_value = (i32)result;
+        }
+        calculator_operator = 0;
+        calculator_entering = 0;
+    } else if ((character == '+' || character == '-' || character == '*' || character == '/') &&
+               !calculator_error) {
+        if (calculator_operator != 0 && calculator_entering) {
+            calculator_left = calculator_value;
+        } else {
+            calculator_left = calculator_value;
+        }
+        calculator_operator = character;
+        calculator_entering = 0;
+    }
+}
+
+void framebuffer_calculator_input(char character)
+{
+    if (active_app != APP_CALCULATOR) {
+        return;
+    }
+    calculator_input(character);
+
+    u32 panel_x;
+    u32 panel_y;
+    u32 panel_width;
+    u32 panel_height;
+    get_app_panel_bounds(&panel_x, &panel_y, &panel_width, &panel_height);
+    draw_calculator(panel_x, panel_y, panel_width);
 }
 
 static void draw_note_text(u32 panel_x, u32 panel_y, u32 panel_width, u32 panel_height)
@@ -312,10 +537,7 @@ static void draw_app_panel(void)
         draw_text(panel_x + 22, panel_y + 68, "32 BIT HOBBY SYSTEM", 157, 174, 181);
         draw_text(panel_x + 22, panel_y + 98, "FRAMEBUFFER DESKTOP", 157, 174, 181);
     } else if (active_app == APP_CALCULATOR) {
-        draw_text(panel_x + 22, panel_y + 26, "CALCULATOR", 220, 230, 232);
-        fill_rect(panel_x + 22, panel_y + 68, panel_width - 44, 54, 24, 34, 43);
-        draw_text(panel_x + 38, panel_y + 86, "12 PLUS 30 EQUALS 42", 220, 230, 232);
-        draw_text(panel_x + 22, panel_y + 148, "BASIC ARITHMETIC", 157, 174, 181);
+        draw_calculator(panel_x, panel_y, panel_width);
     } else if (active_app == APP_TERMINAL) {
         draw_text(panel_x + 22, panel_y + 26, "TERMINAL", 220, 230, 232);
         fill_rect(panel_x + 22, panel_y + 62, panel_width - 44, panel_height - 82,
@@ -394,6 +616,9 @@ void framebuffer_draw_desktop(void)
     if (file_menu_open) {
         draw_app_menu();
     }
+    if (power_menu_open) {
+        draw_power_menu();
+    }
 }
 
 void framebuffer_draw_pointer_status(i32 x, i32 y)
@@ -418,8 +643,48 @@ void framebuffer_draw_pointer_status(i32 x, i32 y)
               position, 157, 174, 181);
 }
 
+u8 framebuffer_take_power_action(void)
+{
+    u8 action = requested_power_action;
+    requested_power_action = POWER_ACTION_NONE;
+    return action;
+}
+
 void framebuffer_handle_click(i32 x, i32 y)
 {
+    u32 power_x = framebuffer.width > 140 ? framebuffer.width - 128 : 252;
+    if (x >= (i32)power_x && x < (i32)(power_x + 112) && y >= 4 && y < 36) {
+        if (file_menu_open) {
+            file_menu_open = 0;
+            clear_app_menu();
+        }
+        if (power_menu_open) {
+            power_menu_open = 0;
+            clear_power_menu();
+        } else {
+            power_menu_open = 1;
+            draw_power_menu();
+        }
+        draw_top_bar();
+        return;
+    }
+
+    if (power_menu_open) {
+        u32 menu_x = power_menu_x();
+        if (x >= (i32)menu_x && x < (i32)(menu_x + 180) && y >= 40 && y < 130) {
+            requested_power_action = y < 84
+                ? POWER_ACTION_RESTART
+                : POWER_ACTION_SHUTDOWN;
+            power_menu_open = 0;
+            clear_power_menu();
+            draw_top_bar();
+            return;
+        }
+        power_menu_open = 0;
+        clear_power_menu();
+        draw_top_bar();
+    }
+
     if (x >= 148 && x < 244 && y >= 4 && y < 36) {
         file_menu_open = !file_menu_open;
         draw_top_bar();
@@ -462,6 +727,25 @@ void framebuffer_handle_click(i32 x, i32 y)
     u32 panel_width;
     u32 panel_height;
     get_app_panel_bounds(&panel_x, &panel_y, &panel_width, &panel_height);
+    if (active_app == APP_CALCULATOR &&
+        x >= (i32)(panel_x + 22) && x < (i32)(panel_x + panel_width - 22) &&
+        y >= (i32)(panel_y + 98) && y < (i32)(panel_y + 210)) {
+        static const char buttons[4][4] = {
+            {'7', '8', '9', '/'},
+            {'4', '5', '6', '*'},
+            {'1', '2', '3', '-'},
+            {'c', '0', '=', '+'}
+        };
+        u32 button_width = (panel_width - 44) / 4;
+        u32 column = (u32)(x - (i32)(panel_x + 22)) / button_width;
+        u32 button_offset_y = (u32)(y - (i32)(panel_y + 98));
+        u32 row = button_offset_y / 28;
+        if (row < 4 && column < 4 && button_offset_y % 28 < 24) {
+            calculator_input(buttons[row][column]);
+            draw_calculator(panel_x, panel_y, panel_width);
+        }
+        return;
+    }
     if (active_app != APP_DESKTOP &&
         x >= (i32)(panel_x + panel_width - 38) &&
         x < (i32)(panel_x + panel_width - 14) &&
@@ -475,52 +759,50 @@ void framebuffer_handle_click(i32 x, i32 y)
 
 void framebuffer_xor_cursor(i32 x, i32 y)
 {
-    static const char *shape[] = {
-        "#...............",
-        "##..............",
-        "#O#.............",
-        "#OO#............",
-        "#OOO#...........",
-        "#OOOO#..........",
-        "#OOOOO#.........",
-        "#OOOOOO#........",
-        "#OOOOOOO#.......",
-        "#OOOOOOOO#......",
-        "#OOOOOOOOO#.....",
-        "#OOOOOOOOOO#....",
-        "#OOOOOOOOOOO#...",
-        "#OOOOOO#####....",
-        "#OOO#OO#........",
-        "#OO#..#OO#.......",
-        "##.....##........."
-    };
+    if (cursor_visible) {
+        for (u32 row = 0; row < 7; ++row) {
+            for (u32 column = 0; column < 7; ++column) {
+                i32 pixel_x = cursor_x_saved + (i32)column;
+                i32 pixel_y = cursor_y_saved + (i32)row;
+                if (pixel_x < 0 || pixel_y < 0 ||
+                    (u32)pixel_x >= framebuffer.width || (u32)pixel_y >= framebuffer.height) {
+                    continue;
+                }
+                u8 *pixel = framebuffer.pixels + (u32)pixel_y * framebuffer.pitch +
+                            (u32)pixel_x * framebuffer.bytes_per_pixel;
+                u32 saved_offset = (row * 7 + column) * framebuffer.bytes_per_pixel;
+                for (u8 byte = 0; byte < framebuffer.bytes_per_pixel; ++byte) {
+                    pixel[byte] = cursor_saved_pixels[saved_offset + byte];
+                }
+            }
+        }
+        cursor_visible = 0;
+        if (x == cursor_x_saved && y == cursor_y_saved) {
+            return;
+        }
+    }
 
-    for (u32 row = 0; row < sizeof(shape) / sizeof(shape[0]); ++row) {
-        for (u32 column = 0; shape[row][column] != '\0'; ++column) {
-            char pixel_kind = shape[row][column];
-            if (pixel_kind == '.') {
+    cursor_x_saved = x;
+    cursor_y_saved = y;
+    for (u32 row = 0; row < 7; ++row) {
+        for (u32 column = 0; column < 7; ++column) {
+            i32 pixel_x = x + (i32)column;
+            i32 pixel_y = y + (i32)row;
+            if (pixel_x < 0 || pixel_y < 0 ||
+                (u32)pixel_x >= framebuffer.width || (u32)pixel_y >= framebuffer.height) {
                 continue;
             }
-            u32 color = pixel_kind == '#'
-                ? pack_color(245, 247, 250)
-                : pack_color(17, 25, 33);
-            for (i32 scale_y = 0; scale_y < 2; ++scale_y) {
-                for (i32 scale_x = 0; scale_x < 2; ++scale_x) {
-                    i32 pixel_x = x + (i32)column * 2 + scale_x;
-                    i32 pixel_y = y + (i32)row * 2 + scale_y;
-                    if (pixel_x < 0 || pixel_y < 0 ||
-                        (u32)pixel_x >= framebuffer.width ||
-                        (u32)pixel_y >= framebuffer.height) {
-                        continue;
-                    }
-
-                    u8 *pixel = framebuffer.pixels + (u32)pixel_y * framebuffer.pitch +
-                                (u32)pixel_x * framebuffer.bytes_per_pixel;
-                    for (u8 byte = 0; byte < framebuffer.bytes_per_pixel; ++byte) {
-                        pixel[byte] ^= (u8)(color >> (byte * 8));
-                    }
+            u8 *pixel = framebuffer.pixels + (u32)pixel_y * framebuffer.pitch +
+                        (u32)pixel_x * framebuffer.bytes_per_pixel;
+            u32 saved_offset = (row * 7 + column) * framebuffer.bytes_per_pixel;
+            for (u8 byte = 0; byte < framebuffer.bytes_per_pixel; ++byte) {
+                cursor_saved_pixels[saved_offset + byte] = pixel[byte];
+                if ((cursor_shape[row] & (1u << (6 - column))) != 0) {
+                    u32 white = pack_color(255, 255, 255);
+                    pixel[byte] = (u8)(white >> (byte * 8));
                 }
             }
         }
     }
+    cursor_visible = 1;
 }
