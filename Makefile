@@ -3,7 +3,7 @@ ISO_ROOT := $(BUILD_DIR)/iso
 BOOTSTRAP := $(BUILD_DIR)/boot32.elf
 KERNEL := $(BUILD_DIR)/kernel64.elf
 ISO := $(BUILD_DIR)/hobby-os.iso
-VERSION := 1.3.0
+VERSION := 1.4.0
 
 CC := gcc
 LD := ld

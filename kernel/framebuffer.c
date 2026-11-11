@@ -792,7 +792,8 @@ static void draw_app_window(u32 index)
               (i32)index == focused_window ? 25 : 36,
               (i32)index == focused_window ? 33 : 46);
     draw_text(window->x + 12, window->y + 10, "NOVA OS", 220, 230, 232);
-    draw_text(window->x + 112, window->y + 10, app_name(window->app), 157, 174, 181);
+    draw_text(window->x + 88, window->y + 10, "MOVE", 105, 130, 139);
+    draw_text(window->x + 148, window->y + 10, app_name(window->app), 157, 174, 181);
 
     u32 minimize_x = window->x + window->width - 54;
     u32 close_x = window->x + window->width - 28;
