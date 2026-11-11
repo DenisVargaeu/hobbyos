@@ -1,5 +1,5 @@
 #include "include/framebuffer.h"
-#include "include/ramfs.h"
+#include "include/fat16.h"
 
 typedef struct {
     u8 *pixels;
@@ -45,7 +45,9 @@ static char note_text[256];
 static u32 note_length;
 static i32 selected_file = -1;
 static int file_editing;
+static int file_save_error;
 static u32 new_file_serial = 1;
+static u32 file_scroll;
 static i32 calculator_value;
 static i32 calculator_left;
 static char calculator_operator;
@@ -160,6 +162,7 @@ static const u8 *glyph_rows(char character)
     static const u8 divide[7] = {1, 2, 4, 8, 16, 0, 4};
     static const u8 equals[7] = {0, 0, 31, 0, 31, 0, 0};
     static const u8 period[7] = {0, 0, 0, 0, 0, 12, 12};
+    static const u8 comma[7] = {0, 0, 0, 0, 12, 12, 8};
 
     if (character >= 'a' && character <= 'z') {
         character = (char)(character - 'a' + 'A');
@@ -187,6 +190,9 @@ static const u8 *glyph_rows(char character)
     }
     if (character == '.') {
         return period;
+    }
+    if (character == ',') {
+        return comma;
     }
     if (character < 'A' || character > 'Z') {
         return space;
@@ -719,8 +725,25 @@ static void draw_files_panel(u32 panel_x, u32 panel_y,
                              u32 panel_width, u32 panel_height)
 {
     draw_text(panel_x + 22, panel_y + 26, "FILES", 220, 230, 232);
+    if (!fat16_is_mounted()) {
+        draw_text(panel_x + 22, panel_y + 66,
+                  fat16_disk_present() ? "IDE DISK DETECTED" : "NO IDE DISK",
+                  157, 174, 181);
+        draw_text(panel_x + 22, panel_y + 96,
+                  fat16_needs_format() ? "FAT16 FORMAT REQUIRED" : "DISK IS UNMOUNTED",
+                  220, 230, 232);
+        if (fat16_disk_present()) {
+            u32 button_x = panel_x + panel_width - 104;
+            fill_rect(button_x, panel_y + 14, 82, 28, 49, 135, 105);
+            draw_text(button_x + (fat16_needs_format() ? 5 : 10), panel_y + 23,
+                      fat16_needs_format() ? "FORMAT" : "MOUNT", 245, 247, 250);
+        }
+        draw_text(panel_x + 22, panel_y + 132, "FAT16 IDE VOLUME", 105, 174, 181);
+        return;
+    }
+
     if (file_editing && selected_file >= 0) {
-        ramfs_file_t *file = ramfs_file_at((u32)selected_file);
+        fat16_file_t *file = fat16_file_at((u32)selected_file);
         if (file == NULL) {
             file_editing = 0;
             selected_file = -1;
@@ -729,7 +752,10 @@ static void draw_files_panel(u32 panel_x, u32 panel_y,
             draw_text(panel_x + 30, panel_y + 56, "BACK", 240, 244, 246);
             draw_text(panel_x + 98, panel_y + 56, file->name, 220, 230, 232);
             draw_text(panel_x + panel_width - 126, panel_y + 56,
-                      "AUTO SAVED", 105, 220, 172);
+                      file_save_error ? "SAVE ERROR" : "SAVED",
+                      file_save_error ? 230 : 105,
+                      file_save_error ? 105 : 220,
+                      file_save_error ? 105 : 172);
 
             u32 editor_x = panel_x + 22;
             u32 editor_y = panel_y + 80;
@@ -760,27 +786,43 @@ static void draw_files_panel(u32 panel_x, u32 panel_y,
         }
     }
 
-    u32 button_x = panel_x + panel_width - 104;
-    fill_rect(button_x, panel_y + 14, 82, 28, 49, 135, 105);
-    draw_text(button_x + 16, panel_y + 23, "NEW", 245, 247, 250);
-    draw_text(panel_x + 22, panel_y + 58, "RAM FILES", 157, 174, 181);
+    u32 eject_x = panel_x + panel_width - 104;
+    u32 new_x = panel_x + panel_width - 200;
+    fill_rect(new_x, panel_y + 14, 82, 28, 49, 135, 105);
+    draw_text(new_x + 16, panel_y + 23, "NEW", 245, 247, 250);
+    fill_rect(eject_x, panel_y + 14, 82, 28, 134, 54, 58);
+    draw_text(eject_x + 7, panel_y + 23, "EJECT", 245, 247, 250);
+    draw_text(panel_x + 22, panel_y + 58, "FAT16 FILES", 157, 174, 181);
 
     u32 row_y = panel_y + 82;
-    u32 row_step = 30;
-    u32 visible_rows = (panel_height - 88) / row_step;
-    for (u32 index = 0; index < ramfs_count() && index < visible_rows; ++index) {
-        ramfs_file_t *file = ramfs_file_at(index);
+    u32 row_step = 28;
+    u32 visible_rows = (panel_height - 82) / row_step;
+    u32 count = fat16_file_count();
+    if (file_scroll + visible_rows > count) {
+        file_scroll = count > visible_rows ? count - visible_rows : 0;
+    }
+    for (u32 row = 0; row < visible_rows && file_scroll + row < count; ++row) {
+        u32 index = file_scroll + row;
+        fat16_file_t *file = fat16_file_at(index);
         if (file == NULL) {
             continue;
         }
-        fill_rect(panel_x + 18, row_y + index * row_step,
+        fill_rect(panel_x + 18, row_y + row * row_step,
                   panel_width - 36, 26, 24, 34, 43);
-        fill_rect(panel_x + 28, row_y + 7 + index * row_step,
+        fill_rect(panel_x + 28, row_y + 7 + row * row_step,
                   10, 12, 49, 135, 175);
-        draw_text(panel_x + 50, row_y + 6 + index * row_step,
+        draw_text(panel_x + 50, row_y + 6 + row * row_step,
                   file->name, 220, 230, 232);
-        draw_text(panel_x + panel_width - 76, row_y + 6 + index * row_step,
+        draw_text(panel_x + panel_width - 76, row_y + 6 + row * row_step,
                   "EDIT", 105, 220, 172);
+    }
+    if (file_scroll != 0) {
+        draw_text(panel_x + panel_width - 110, panel_y + panel_height - 22,
+                  "UP", 157, 174, 181);
+    }
+    if (file_scroll + visible_rows < count) {
+        draw_text(panel_x + panel_width - 62, panel_y + panel_height - 22,
+                  "DOWN", 157, 174, 181);
     }
 }
 
@@ -909,11 +951,16 @@ void framebuffer_file_input(char character)
         return;
     }
 
+    int saved = 1;
     if (character == '\b') {
-        ramfs_backspace((u32)selected_file);
+        fat16_file_t *file = fat16_file_at((u32)selected_file);
+        if (file != NULL && file->size != 0) {
+            saved = fat16_backspace((u32)selected_file);
+        }
     } else if (character != '\0') {
-        ramfs_append((u32)selected_file, character);
+        saved = fat16_append((u32)selected_file, character);
     }
+    file_save_error = !saved;
 
     draw_app_window((u32)focused_window);
     flush_region(app_windows[focused_window].x, app_windows[focused_window].y,
@@ -1144,40 +1191,76 @@ void framebuffer_handle_click(i32 x, i32 y)
         if (window->app == APP_FILES) {
             u32 panel_y = window->y + WINDOW_TITLE_HEIGHT;
             int files_changed = 0;
-            if (file_editing && selected_file >= 0) {
+            u32 button_x = window->x + window->width - 104;
+            if (!fat16_is_mounted()) {
+                if (fat16_disk_present() &&
+                    x >= (i32)button_x && x < (i32)(button_x + 82) &&
+                    y >= (i32)(panel_y + 14) && y < (i32)(panel_y + 42)) {
+                    if (fat16_needs_format()) {
+                        fat16_format();
+                    } else {
+                        fat16_mount();
+                    }
+                    files_changed = 1;
+                }
+            } else if (file_editing && selected_file >= 0) {
                 if (x >= (i32)(window->x + 22) && x < (i32)(window->x + 84) &&
                     y >= (i32)(panel_y + 48) && y < (i32)(panel_y + 74)) {
                     file_editing = 0;
                     selected_file = -1;
+                    file_save_error = 0;
                     files_changed = 1;
                 }
             } else {
-                u32 new_x = window->x + window->width - 104;
-                if (x >= (i32)new_x && x < (i32)(new_x + 82) &&
+                if (x >= (i32)button_x && x < (i32)(button_x + 82) &&
                     y >= (i32)(panel_y + 14) && y < (i32)(panel_y + 42)) {
-                    char name[RAMFS_NAME_SIZE] = "NEW ";
-                    u32 name_length = append_number(name, 4, new_file_serial);
-                    name[name_length++] = '.';
-                    name[name_length++] = 'T';
-                    name[name_length++] = 'X';
-                    name[name_length++] = 'T';
-                    name[name_length] = '\0';
-                    int created = ramfs_create(name);
+                    fat16_unmount();
+                    file_scroll = 0;
+                    files_changed = 1;
+                } else if (x >= (i32)(window->x + window->width - 200) &&
+                           x < (i32)(window->x + window->width - 118) &&
+                           y >= (i32)(panel_y + 14) && y < (i32)(panel_y + 42)) {
+                    int created = -1;
+                    for (u32 attempt = 0; attempt < 999 && created < 0; ++attempt) {
+                        char name[FAT16_NAME_SIZE] = "NEW";
+                        u32 name_length = append_number(name, 3, new_file_serial++);
+                        name[name_length++] = '.';
+                        name[name_length++] = 'T';
+                        name[name_length++] = 'X';
+                        name[name_length++] = 'T';
+                        name[name_length] = '\0';
+                        created = fat16_create(name);
+                    }
                     if (created >= 0) {
-                        ++new_file_serial;
                         selected_file = created;
                         file_editing = 1;
+                        file_save_error = 0;
                         files_changed = 1;
                     }
                 } else {
                     u32 row_y = panel_y + 82;
-                    if (x >= (i32)(window->x + 18) &&
-                        x < (i32)(window->x + window->width - 18) &&
-                        y >= (i32)row_y) {
-                        u32 row = (u32)(y - (i32)row_y) / 30;
-                        if ((y - (i32)row_y) % 30 < 26 && ramfs_file_at(row) != NULL) {
-                            selected_file = (i32)row;
+                    u32 visible_rows = ((window->height - WINDOW_TITLE_HEIGHT) - 82) / 28;
+                    if (y >= (i32)(panel_y + window->height - WINDOW_TITLE_HEIGHT - 24) &&
+                        x >= (i32)(window->x + window->width - 120)) {
+                        if (x < (i32)(window->x + window->width - 62)) {
+                            if (file_scroll > 0) {
+                                --file_scroll;
+                                files_changed = 1;
+                            }
+                        } else if (file_scroll + visible_rows < fat16_file_count()) {
+                            ++file_scroll;
+                            files_changed = 1;
+                        }
+                    } else if (x >= (i32)(window->x + 18) &&
+                               x < (i32)(window->x + window->width - 18) &&
+                               y >= (i32)row_y) {
+                        u32 row = (u32)(y - (i32)row_y) / 28;
+                        u32 file_index = file_scroll + row;
+                        if ((y - (i32)row_y) % 28 < 26 &&
+                            fat16_file_at(file_index) != NULL) {
+                            selected_file = (i32)file_index;
                             file_editing = 1;
+                            file_save_error = 0;
                             files_changed = 1;
                         }
                     }

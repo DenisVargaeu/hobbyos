@@ -3,7 +3,8 @@ ISO_ROOT := $(BUILD_DIR)/iso
 BOOTSTRAP := $(BUILD_DIR)/boot32.elf
 KERNEL := $(BUILD_DIR)/kernel64.elf
 ISO := $(BUILD_DIR)/hobby-os.iso
-VERSION := 1.6.0
+DISK := $(BUILD_DIR)/nova-storage.img
+VERSION := 1.7.0
 
 CC := gcc
 LD := ld
@@ -13,7 +14,7 @@ CFLAGS := -m64 -std=gnu11 -O2 -Wall -Wextra -Werror -ffreestanding \
           -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		  -mno-red-zone -mgeneral-regs-only -mcmodel=small \
 		  -DNOVA_VERSION='"$(VERSION)"' -Ikernel
-C_SOURCES := kernel/main.c kernel/framebuffer.c kernel/interrupts.c kernel/ps2_mouse.c kernel/keyboard.c kernel/ramfs.c
+C_SOURCES := kernel/main.c kernel/framebuffer.c kernel/interrupts.c kernel/ps2_mouse.c kernel/keyboard.c kernel/ata.c kernel/fat16.c
 ASM_SOURCES := kernel/mouse_irq.asm kernel/keyboard_irq.asm
 C_OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SOURCES))
 ASM_OBJECTS := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SOURCES))
@@ -50,8 +51,15 @@ $(ISO): $(BOOTSTRAP) $(KERNEL) grub/grub.cfg
 
 iso: $(ISO)
 
-run: $(ISO)
+$(DISK): | $(BUILD_DIR)
+	qemu-img create -f raw $@ 16M
+
+$(BUILD_DIR):
+	mkdir -p $@
+
+run: $(ISO) $(DISK)
 	qemu-system-x86_64 -m 128M -cdrom $(ISO) -boot d -vga std \
+		-drive file=$(DISK),format=raw,if=ide,index=0 \
 		-display gtk,grab-on-hover=on,show-cursor=off
 
 clean:
