@@ -184,9 +184,9 @@ static void fill_rect(u32 x, u32 y, u32 width, u32 height,
     }
 }
 
-int framebuffer_initialize(u32 multiboot_info_address)
+int framebuffer_initialize(u64 multiboot_info_address)
 {
-    const u32 *info = (const u32 *)multiboot_info_address;
+    const u32 *info = (const u32 *)(uptr)multiboot_info_address;
     u32 total_size = info[0];
     if (total_size < 16) {
         return 0;
@@ -194,7 +194,7 @@ int framebuffer_initialize(u32 multiboot_info_address)
 
     u32 offset = 8;
     while (offset + 8 <= total_size) {
-        const u32 *tag = (const u32 *)(multiboot_info_address + offset);
+        const u32 *tag = (const u32 *)(uptr)(multiboot_info_address + offset);
         u32 type = tag[0];
         u32 size = tag[1];
         if (size < 8 || size > total_size - offset) {
@@ -214,7 +214,7 @@ int framebuffer_initialize(u32 multiboot_info_address)
                 return 0;
             }
 
-            framebuffer.pixels = (u8 *)(u32)address;
+            framebuffer.pixels = (u8 *)(uptr)address;
             framebuffer.pitch = pitch;
             framebuffer.width = width;
             framebuffer.height = height;

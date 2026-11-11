@@ -7,7 +7,7 @@
 #define POWER_ACTION_RESTART 1
 #define POWER_ACTION_SHUTDOWN 2
 
-int framebuffer_initialize(u32 multiboot_info_address);
+int framebuffer_initialize(u64 multiboot_info_address);
 u32 framebuffer_width(void);
 u32 framebuffer_height(void);
 void framebuffer_draw_boot_screen(void);

@@ -1,35 +1,36 @@
-OUTPUT_FORMAT(elf32-i386)
-ENTRY(_start)
+OUTPUT_FORMAT(elf64-x86-64)
+ENTRY(kernel_main)
+
+PHDRS
+{
+    text PT_LOAD FLAGS(5);
+    data PT_LOAD FLAGS(6);
+}
 
 SECTIONS
 {
-    . = 1M;
-
-    .multiboot2 ALIGN(8) :
-    {
-        KEEP(*(.multiboot2))
-    }
+    . = 16M;
 
     .text ALIGN(4K) :
     {
         *(.text*)
-    }
+    } :text
 
     .rodata ALIGN(4K) :
     {
         *(.rodata*)
-    }
+    } :text
 
     .data ALIGN(4K) :
     {
         *(.data*)
-    }
+    } :data
 
     .bss ALIGN(4K) :
     {
         *(COMMON)
         *(.bss*)
-    }
+    } :data
 
     /DISCARD/ :
     {
