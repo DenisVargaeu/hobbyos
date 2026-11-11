@@ -1,4 +1,5 @@
 #include "include/framebuffer.h"
+#include "include/ramfs.h"
 
 typedef struct {
     u8 *pixels;
@@ -42,6 +43,9 @@ static i32 drag_offset_x;
 static i32 drag_offset_y;
 static char note_text[256];
 static u32 note_length;
+static i32 selected_file = -1;
+static int file_editing;
+static u32 new_file_serial = 1;
 static i32 calculator_value;
 static i32 calculator_left;
 static char calculator_operator;
@@ -711,6 +715,75 @@ static void draw_app_tile(u32 x, u32 y, const char *name, char icon,
     draw_text(x + 72, y + 25, name, 220, 230, 232);
 }
 
+static void draw_files_panel(u32 panel_x, u32 panel_y,
+                             u32 panel_width, u32 panel_height)
+{
+    draw_text(panel_x + 22, panel_y + 26, "FILES", 220, 230, 232);
+    if (file_editing && selected_file >= 0) {
+        ramfs_file_t *file = ramfs_file_at((u32)selected_file);
+        if (file == NULL) {
+            file_editing = 0;
+            selected_file = -1;
+        } else {
+            fill_rect(panel_x + 22, panel_y + 48, 62, 24, 49, 96, 85);
+            draw_text(panel_x + 30, panel_y + 56, "BACK", 240, 244, 246);
+            draw_text(panel_x + 98, panel_y + 56, file->name, 220, 230, 232);
+            draw_text(panel_x + panel_width - 126, panel_y + 56,
+                      "AUTO SAVED", 105, 220, 172);
+
+            u32 editor_x = panel_x + 22;
+            u32 editor_y = panel_y + 80;
+            u32 editor_width = panel_width - 44;
+            u32 editor_height = panel_height - 94;
+            fill_rect(editor_x, editor_y, editor_width, editor_height, 24, 34, 43);
+            u32 x = editor_x + 10;
+            u32 y = editor_y + 8;
+            u32 start_x = x;
+            u32 bottom = editor_y + editor_height;
+            for (u32 index = 0; index < file->size && y + 14 < bottom; ++index) {
+                char character = file->data[index];
+                if (character == '\n' || x + 12 > editor_x + editor_width - 6) {
+                    x = start_x;
+                    y += 20;
+                    if (character == '\n') {
+                        continue;
+                    }
+                }
+                char text[2] = {character, '\0'};
+                draw_text(x, y, text, 220, 230, 232);
+                x += 12;
+            }
+            if (y + 14 < bottom) {
+                fill_rect(x, y + 15, 2, 12, 49, 175, 130);
+            }
+            return;
+        }
+    }
+
+    u32 button_x = panel_x + panel_width - 104;
+    fill_rect(button_x, panel_y + 14, 82, 28, 49, 135, 105);
+    draw_text(button_x + 16, panel_y + 23, "NEW", 245, 247, 250);
+    draw_text(panel_x + 22, panel_y + 58, "RAM FILES", 157, 174, 181);
+
+    u32 row_y = panel_y + 82;
+    u32 row_step = 30;
+    u32 visible_rows = (panel_height - 88) / row_step;
+    for (u32 index = 0; index < ramfs_count() && index < visible_rows; ++index) {
+        ramfs_file_t *file = ramfs_file_at(index);
+        if (file == NULL) {
+            continue;
+        }
+        fill_rect(panel_x + 18, row_y + index * row_step,
+                  panel_width - 36, 26, 24, 34, 43);
+        fill_rect(panel_x + 28, row_y + 7 + index * row_step,
+                  10, 12, 49, 135, 175);
+        draw_text(panel_x + 50, row_y + 6 + index * row_step,
+                  file->name, 220, 230, 232);
+        draw_text(panel_x + panel_width - 76, row_y + 6 + index * row_step,
+                  "EDIT", 105, 220, 172);
+    }
+}
+
 static void draw_status_bar(void)
 {
     u32 bar_y = framebuffer.height - TASKBAR_HEIGHT;
@@ -746,13 +819,7 @@ static void draw_app_panel(u8 app, u32 panel_x, u32 panel_y,
     fill_rect(panel_x, panel_y, panel_width, 4, 49, 175, 130);
 
     if (app == APP_FILES) {
-        draw_text(panel_x + 22, panel_y + 26, "FILES", 220, 230, 232);
-        draw_text(panel_x + 22, panel_y + 68, "BOOT", 157, 174, 181);
-        draw_text(panel_x + 190, panel_y + 68, "GRUB CFG", 220, 230, 232);
-        draw_text(panel_x + 22, panel_y + 98, "KERNEL", 157, 174, 181);
-        draw_text(panel_x + 190, panel_y + 98, "KERNEL ELF", 220, 230, 232);
-        draw_text(panel_x + 22, panel_y + 128, "INPUT", 157, 174, 181);
-        draw_text(panel_x + 190, panel_y + 128, "PS2 MOUSE", 220, 230, 232);
+        draw_files_panel(panel_x, panel_y, panel_width, panel_height);
     } else if (app == APP_NOTES) {
         draw_text(panel_x + 22, panel_y + 26, "NOTES", 220, 230, 232);
         draw_note_text(panel_x, panel_y, panel_width, panel_height);
@@ -826,6 +893,26 @@ void framebuffer_note_input(char character)
             note_text[note_length++] = character;
             note_text[note_length] = '\0';
         }
+    }
+
+    draw_app_window((u32)focused_window);
+    flush_region(app_windows[focused_window].x, app_windows[focused_window].y,
+                 app_windows[focused_window].width + 6,
+                 app_windows[focused_window].height + 6);
+}
+
+void framebuffer_file_input(char character)
+{
+    if (focused_window < 0 || !app_windows[focused_window].open ||
+        app_windows[focused_window].app != APP_FILES || !file_editing ||
+        selected_file < 0) {
+        return;
+    }
+
+    if (character == '\b') {
+        ramfs_backspace((u32)selected_file);
+    } else if (character != '\0') {
+        ramfs_append((u32)selected_file, character);
     }
 
     draw_app_window((u32)focused_window);
@@ -1052,6 +1139,58 @@ void framebuffer_handle_click(i32 x, i32 y)
             }
             redraw_taskbar();
             return;
+        }
+
+        if (window->app == APP_FILES) {
+            u32 panel_y = window->y + WINDOW_TITLE_HEIGHT;
+            int files_changed = 0;
+            if (file_editing && selected_file >= 0) {
+                if (x >= (i32)(window->x + 22) && x < (i32)(window->x + 84) &&
+                    y >= (i32)(panel_y + 48) && y < (i32)(panel_y + 74)) {
+                    file_editing = 0;
+                    selected_file = -1;
+                    files_changed = 1;
+                }
+            } else {
+                u32 new_x = window->x + window->width - 104;
+                if (x >= (i32)new_x && x < (i32)(new_x + 82) &&
+                    y >= (i32)(panel_y + 14) && y < (i32)(panel_y + 42)) {
+                    char name[RAMFS_NAME_SIZE] = "NEW ";
+                    u32 name_length = append_number(name, 4, new_file_serial);
+                    name[name_length++] = '.';
+                    name[name_length++] = 'T';
+                    name[name_length++] = 'X';
+                    name[name_length++] = 'T';
+                    name[name_length] = '\0';
+                    int created = ramfs_create(name);
+                    if (created >= 0) {
+                        ++new_file_serial;
+                        selected_file = created;
+                        file_editing = 1;
+                        files_changed = 1;
+                    }
+                } else {
+                    u32 row_y = panel_y + 82;
+                    if (x >= (i32)(window->x + 18) &&
+                        x < (i32)(window->x + window->width - 18) &&
+                        y >= (i32)row_y) {
+                        u32 row = (u32)(y - (i32)row_y) / 30;
+                        if ((y - (i32)row_y) % 30 < 26 && ramfs_file_at(row) != NULL) {
+                            selected_file = (i32)row;
+                            file_editing = 1;
+                            files_changed = 1;
+                        }
+                    }
+                }
+            }
+            if (files_changed) {
+                if (old_focus >= 0 && old_focus != index) {
+                    redraw_window_region((u32)old_focus);
+                }
+                redraw_window_region((u32)index);
+                redraw_taskbar();
+                return;
+            }
         }
 
         if (window->app == APP_CALCULATOR) {

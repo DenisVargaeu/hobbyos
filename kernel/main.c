@@ -3,6 +3,7 @@
 #include "include/io.h"
 #include "include/keyboard.h"
 #include "include/mouse.h"
+#include "include/ramfs.h"
 #include "include/types.h"
 
 #define MULTIBOOT2_BOOTLOADER_MAGIC 0x36D76289u
@@ -73,6 +74,7 @@ void kernel_main(u32 magic, u32 multiboot_info_address)
         }
     }
 
+    ramfs_initialize();
     show_boot_screen();
     framebuffer_draw_desktop();
     mouse_set_bounds(framebuffer_width(), framebuffer_height());
@@ -117,6 +119,7 @@ void kernel_main(u32 magic, u32 multiboot_info_address)
             }
             if (has_typed_character) {
                 framebuffer_note_input(typed_character);
+                framebuffer_file_input(typed_character);
                 framebuffer_calculator_input(typed_character);
             }
             framebuffer_draw_pointer_status(cursor_x, cursor_y);
