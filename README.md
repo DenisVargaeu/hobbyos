@@ -5,7 +5,7 @@ which loads the ELF64 kernel, creates identity mappings for the first 4 GiB,
 and switches the processor into long mode. The freestanding C kernel draws a
 graphical desktop using the RGB framebuffer supplied by GRUB.
 
-Current version: **1.4.0**. The version is shown on the boot splash and in About OS.
+Current version: **1.5.0**. The version is shown on the boot splash and in About OS.
 
 The desktop includes a boot splash, navbar, app drawer, taskbar, and a basic
 window manager. Changes are composed in a RAM backbuffer and only the finished

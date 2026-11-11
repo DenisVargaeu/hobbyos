@@ -1120,9 +1120,9 @@ void framebuffer_pointer_move(i32 x, i32 y, u8 buttons)
         return;
     }
 
-    redraw_window_bounds(old_x, old_y, window_width, window_height);
     window->x = (u32)next_x;
     window->y = (u32)next_y;
+    redraw_window_bounds(old_x, old_y, window_width, window_height);
     redraw_window_region((u32)dragged_window);
 }
 
