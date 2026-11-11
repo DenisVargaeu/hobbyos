@@ -95,8 +95,9 @@ void kernel_main(u32 magic, u32 multiboot_info_address)
         char typed_character;
         mouse_get_position(&next_x, &next_y);
         u8 buttons = mouse_get_buttons();
+        int pointer_moved = next_x != cursor_x || next_y != cursor_y;
         int has_typed_character = keyboard_pop_char(&typed_character);
-        if (next_x != cursor_x || next_y != cursor_y ||
+        if (pointer_moved ||
             buttons != previous_buttons || has_typed_character) {
             framebuffer_xor_cursor(cursor_x, cursor_y);
             cursor_x = next_x;
@@ -110,6 +111,9 @@ void kernel_main(u32 magic, u32 multiboot_info_address)
                 if (power_action == POWER_ACTION_SHUTDOWN) {
                     power_shutdown();
                 }
+            }
+            if (pointer_moved || buttons != previous_buttons) {
+                framebuffer_pointer_move(cursor_x, cursor_y, buttons);
             }
             if (has_typed_character) {
                 framebuffer_note_input(typed_character);

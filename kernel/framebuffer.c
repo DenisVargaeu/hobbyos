@@ -14,11 +14,29 @@ typedef struct {
     u8 blue_size;
 } framebuffer_t;
 
+typedef struct {
+    u8 app;
+    u8 open;
+    u8 minimized;
+    u32 x;
+    u32 y;
+    u32 width;
+    u32 height;
+} app_window_t;
+
+#define MAX_APP_WINDOWS 6
+#define WINDOW_TITLE_HEIGHT 28
+#define TASKBAR_HEIGHT 36
+
 static framebuffer_t framebuffer;
 static int file_menu_open;
 static int power_menu_open;
 static u8 requested_power_action;
-static u8 active_app;
+static app_window_t app_windows[MAX_APP_WINDOWS];
+static i32 focused_window = -1;
+static i32 dragged_window = -1;
+static i32 drag_offset_x;
+static i32 drag_offset_y;
 static char note_text[256];
 static u32 note_length;
 static i32 calculator_value;
@@ -30,6 +48,11 @@ static int cursor_visible;
 static i32 cursor_x_saved;
 static i32 cursor_y_saved;
 static u8 cursor_saved_pixels[7 * 7 * 4];
+static int clip_enabled;
+static u32 clip_left;
+static u32 clip_top;
+static u32 clip_right;
+static u32 clip_bottom;
 
 static const u8 cursor_shape[7] = {
     0x1C, 0x3E, 0x7F, 0x7F, 0x7F, 0x3E, 0x1C
@@ -47,6 +70,9 @@ enum {
 #define DESKTOP_RED 24
 #define DESKTOP_GREEN 34
 #define DESKTOP_BLUE 43
+
+static void draw_app_window(u32 index);
+static void draw_app_panel(u8 app, u32 x, u32 y, u32 width, u32 height);
 
 static void fill_rect(u32 x, u32 y, u32 width, u32 height,
                       u8 red, u8 green, u8 blue);
@@ -79,6 +105,7 @@ static const u8 *glyph_rows(char character)
     static const u8 multiply[7] = {0, 17, 10, 4, 10, 17, 0};
     static const u8 divide[7] = {1, 2, 4, 8, 16, 0, 4};
     static const u8 equals[7] = {0, 0, 31, 0, 31, 0, 0};
+    static const u8 period[7] = {0, 0, 0, 0, 0, 12, 12};
 
     if (character >= 'a' && character <= 'z') {
         character = (char)(character - 'a' + 'A');
@@ -103,6 +130,9 @@ static const u8 *glyph_rows(char character)
     }
     if (character == '=') {
         return equals;
+    }
+    if (character == '.') {
+        return period;
     }
     if (character < 'A' || character > 'Z') {
         return space;
@@ -177,11 +207,69 @@ static void fill_rect(u32 x, u32 y, u32 width, u32 height,
         bottom = framebuffer.height;
     }
 
+    if (clip_enabled) {
+        if (x < clip_left) x = clip_left;
+        if (y < clip_top) y = clip_top;
+        if (right > clip_right) right = clip_right;
+        if (bottom > clip_bottom) bottom = clip_bottom;
+    }
+    if (x >= right || y >= bottom) {
+        return;
+    }
+
     for (u32 row = y; row < bottom; ++row) {
         for (u32 column = x; column < right; ++column) {
             put_pixel(column, row, red, green, blue);
         }
     }
+}
+
+static void redraw_desktop_region(u32 x, u32 y, u32 width, u32 height)
+{
+    if (width == 0 || height == 0 || x >= framebuffer.width || y >= framebuffer.height) {
+        return;
+    }
+
+    clip_left = x;
+    clip_top = y;
+    clip_right = x + width;
+    clip_bottom = y + height;
+    if (clip_right < x || clip_right > framebuffer.width) clip_right = framebuffer.width;
+    if (clip_bottom < y || clip_bottom > framebuffer.height) clip_bottom = framebuffer.height;
+    clip_enabled = 1;
+    framebuffer_draw_desktop();
+    clip_enabled = 0;
+}
+
+static void redraw_window_region(u32 index)
+{
+    if (index >= MAX_APP_WINDOWS) {
+        return;
+    }
+
+    app_window_t *window = &app_windows[index];
+    u32 x = window->x > 6 ? window->x - 6 : 0;
+    u32 y = window->y > 6 ? window->y - 6 : 0;
+    redraw_desktop_region(x, y, window->width + 12, window->height + 12);
+}
+
+static void redraw_window_bounds(u32 x, u32 y, u32 width, u32 height)
+{
+    u32 left = x > 6 ? x - 6 : 0;
+    u32 top = y > 6 ? y - 6 : 0;
+    redraw_desktop_region(left, top, width + 12, height + 12);
+}
+
+static void redraw_taskbar(void)
+{
+    redraw_desktop_region(0, framebuffer.height - TASKBAR_HEIGHT,
+                          framebuffer.width, TASKBAR_HEIGHT);
+}
+
+static void redraw_app_drawer(void)
+{
+    u32 x = framebuffer.width > 520 ? (framebuffer.width - 480) / 2 : 16;
+    redraw_desktop_region(x - (x >= 4 ? 4 : 0), 64, 480, 392);
 }
 
 int framebuffer_initialize(u64 multiboot_info_address)
@@ -268,6 +356,7 @@ void framebuffer_draw_boot_screen(void)
     draw_text(panel_x + 102, panel_y + 42, "NOVA OS", 230, 238, 240);
     draw_text(panel_x + 34, panel_y + 112, "STARTING SYSTEM", 220, 230, 232);
     draw_text(panel_x + 34, panel_y + 144, "LOADING DESKTOP", 157, 174, 181);
+    draw_text(panel_x + 34, panel_y + 168, "VERSION " NOVA_VERSION, 157, 174, 181);
     fill_rect(panel_x + 34, panel_y + 184, panel_width - 68, 12, 17, 25, 33);
 }
 
@@ -312,19 +401,86 @@ static void draw_power_menu(void)
     draw_text(x + 14, 91, "SHUTDOWN", 220, 230, 232);
 }
 
-static void clear_power_menu(void)
+static const char *app_name(u8 app)
 {
-    u32 x = power_menu_x();
-    fill_rect(x, 40, 184, 96, DESKTOP_RED, DESKTOP_GREEN, DESKTOP_BLUE);
+    switch (app) {
+    case APP_FILES: return "FILES";
+    case APP_NOTES: return "NOTES";
+    case APP_ABOUT: return "ABOUT";
+    case APP_CALCULATOR: return "CALCULATOR";
+    case APP_TERMINAL: return "TERMINAL";
+    default: return "DESKTOP";
+    }
 }
 
-static void get_app_panel_bounds(u32 *x, u32 *y, u32 *width, u32 *height)
+static int find_app_window(u8 app)
 {
-    *width = framebuffer.width > 520 ? 440 : framebuffer.width - 32;
-    *height = framebuffer.height > 300 ? 220 : framebuffer.height - 96;
-    *x = (framebuffer.width - *width) / 2;
-    u32 available_height = framebuffer.height > 68 ? framebuffer.height - 68 : framebuffer.height;
-    *y = (available_height - *height) / 2 + 40;
+    for (u32 index = 0; index < MAX_APP_WINDOWS; ++index) {
+        if (app_windows[index].open && app_windows[index].app == app) {
+            return (int)index;
+        }
+    }
+    return -1;
+}
+
+static void launch_app(u8 app)
+{
+    if (app == APP_DESKTOP) {
+        file_menu_open = 0;
+        redraw_desktop_region(0, 0, framebuffer.width, 40);
+        redraw_app_drawer();
+        return;
+    }
+
+    i32 old_focus = focused_window;
+    int drawer_was_open = file_menu_open;
+    int power_was_open = power_menu_open;
+
+    int index = find_app_window(app);
+    if (index < 0) {
+        for (u32 candidate = 0; candidate < MAX_APP_WINDOWS; ++candidate) {
+            if (!app_windows[candidate].open) {
+                index = (int)candidate;
+                break;
+            }
+        }
+    }
+    if (index < 0) {
+        return;
+    }
+
+    app_window_t *window = &app_windows[index];
+    if (!window->open) {
+        u32 available_width = framebuffer.width > 48 ? framebuffer.width - 48 : framebuffer.width;
+        u32 available_height = framebuffer.height > 112 ? framebuffer.height - 112 : framebuffer.height;
+        window->width = available_width > 440 ? 440 : available_width;
+        window->height = available_height > 270 ? 270 : available_height;
+        u32 x_room = framebuffer.width > window->width + 24
+            ? framebuffer.width - window->width - 24 : 0;
+        u32 y_room = framebuffer.height > window->height + TASKBAR_HEIGHT + 48
+            ? framebuffer.height - window->height - TASKBAR_HEIGHT - 48 : 0;
+        window->x = x_room == 0 ? 8 : 12 + ((u32)index * 36) % x_room;
+        window->y = y_room == 0 ? 44 : 44 + ((u32)index * 30) % y_room;
+        window->app = app;
+        window->open = 1;
+    }
+    window->minimized = 0;
+    focused_window = index;
+    file_menu_open = 0;
+    power_menu_open = 0;
+    if (drawer_was_open) {
+        redraw_desktop_region(0, 0, framebuffer.width, 40);
+        redraw_app_drawer();
+    }
+    if (power_was_open) {
+        u32 menu_x = power_menu_x();
+        redraw_desktop_region(menu_x > 4 ? menu_x - 4 : 0, 0, 196, 140);
+    }
+    if (old_focus >= 0 && old_focus != index) {
+        redraw_window_region((u32)old_focus);
+    }
+    redraw_window_region((u32)index);
+    redraw_taskbar();
 }
 
 static u32 append_signed(char *text, u32 offset, i32 value)
@@ -449,17 +605,12 @@ static void calculator_input(char character)
 
 void framebuffer_calculator_input(char character)
 {
-    if (active_app != APP_CALCULATOR) {
+    if (focused_window < 0 || !app_windows[focused_window].open ||
+        app_windows[focused_window].app != APP_CALCULATOR) {
         return;
     }
     calculator_input(character);
-
-    u32 panel_x;
-    u32 panel_y;
-    u32 panel_width;
-    u32 panel_height;
-    get_app_panel_bounds(&panel_x, &panel_y, &panel_width, &panel_height);
-    draw_calculator(panel_x, panel_y, panel_width);
+    draw_app_window((u32)focused_window);
 }
 
 static void draw_note_text(u32 panel_x, u32 panel_y, u32 panel_width, u32 panel_height)
@@ -502,26 +653,39 @@ static void draw_app_tile(u32 x, u32 y, const char *name, char icon,
 
 static void draw_status_bar(void)
 {
-    fill_rect(0, framebuffer.height - 28, framebuffer.width, 28, 17, 25, 33);
-    fill_rect(16, framebuffer.height - 19, 7, 7, 49, 175, 130);
-    draw_text(32, framebuffer.height - 20, "WORKSPACE", 157, 174, 181);
+    u32 bar_y = framebuffer.height - TASKBAR_HEIGHT;
+    fill_rect(0, bar_y, framebuffer.width, TASKBAR_HEIGHT, 17, 25, 33);
+    fill_rect(10, bar_y + 5, 58, 26, 49, 175, 130);
+    draw_text(19, bar_y + 14, "NOVA", 245, 247, 250);
+
+    u32 task_x = 76;
+    for (u32 index = 0; index < MAX_APP_WINDOWS; ++index) {
+        app_window_t *window = &app_windows[index];
+        if (!window->open) {
+            continue;
+        }
+        u32 button_x = task_x;
+        fill_rect(button_x, bar_y + 5, 76, 26,
+                  (i32)index == focused_window ? 49 : 31,
+                  (i32)index == focused_window ? 96 : 44,
+                  (i32)index == focused_window ? 85 : 55);
+        const char *label = window->app == APP_CALCULATOR ? "CALC" : app_name(window->app);
+        draw_text(button_x + 8, bar_y + 14, label, 220, 230, 232);
+        task_x += 80;
+    }
     framebuffer_draw_pointer_status(400, 300);
 }
 
-static void draw_app_panel(void)
+static void draw_app_panel(u8 app, u32 panel_x, u32 panel_y,
+                           u32 panel_width, u32 panel_height)
 {
-    u32 panel_x;
-    u32 panel_y;
-    u32 panel_width;
-    u32 panel_height;
-    get_app_panel_bounds(&panel_x, &panel_y, &panel_width, &panel_height);
     if (panel_width < 1 || panel_height < 1) {
         return;
     }
     fill_rect(panel_x, panel_y, panel_width, panel_height, 33, 47, 57);
     fill_rect(panel_x, panel_y, panel_width, 4, 49, 175, 130);
 
-    if (active_app == APP_FILES) {
+    if (app == APP_FILES) {
         draw_text(panel_x + 22, panel_y + 26, "FILES", 220, 230, 232);
         draw_text(panel_x + 22, panel_y + 68, "BOOT", 157, 174, 181);
         draw_text(panel_x + 190, panel_y + 68, "GRUB CFG", 220, 230, 232);
@@ -529,16 +693,17 @@ static void draw_app_panel(void)
         draw_text(panel_x + 190, panel_y + 98, "KERNEL ELF", 220, 230, 232);
         draw_text(panel_x + 22, panel_y + 128, "INPUT", 157, 174, 181);
         draw_text(panel_x + 190, panel_y + 128, "PS2 MOUSE", 220, 230, 232);
-    } else if (active_app == APP_NOTES) {
+    } else if (app == APP_NOTES) {
         draw_text(panel_x + 22, panel_y + 26, "NOTES", 220, 230, 232);
         draw_note_text(panel_x, panel_y, panel_width, panel_height);
-    } else if (active_app == APP_ABOUT) {
+    } else if (app == APP_ABOUT) {
         draw_text(panel_x + 22, panel_y + 26, "ABOUT NOVA OS", 220, 230, 232);
-        draw_text(panel_x + 22, panel_y + 68, "32 BIT HOBBY SYSTEM", 157, 174, 181);
+        draw_text(panel_x + 22, panel_y + 68, "64 BIT HOBBY SYSTEM", 157, 174, 181);
         draw_text(panel_x + 22, panel_y + 98, "FRAMEBUFFER DESKTOP", 157, 174, 181);
-    } else if (active_app == APP_CALCULATOR) {
+        draw_text(panel_x + 22, panel_y + 128, "VERSION " NOVA_VERSION, 157, 174, 181);
+    } else if (app == APP_CALCULATOR) {
         draw_calculator(panel_x, panel_y, panel_width);
-    } else if (active_app == APP_TERMINAL) {
+    } else if (app == APP_TERMINAL) {
         draw_text(panel_x + 22, panel_y + 26, "TERMINAL", 220, 230, 232);
         fill_rect(panel_x + 22, panel_y + 62, panel_width - 44, panel_height - 82,
                   17, 25, 33);
@@ -549,13 +714,41 @@ static void draw_app_panel(void)
         draw_text(panel_x + 22, panel_y + 68, "MOVE THE POINTER TO BEGIN", 157, 174, 181);
     }
 
-    fill_rect(panel_x + panel_width - 38, panel_y + 12, 24, 20, 134, 54, 58);
-    draw_text(panel_x + panel_width - 32, panel_y + 18, "X", 250, 250, 250);
+}
+
+static void draw_app_window(u32 index)
+{
+    app_window_t *window = &app_windows[index];
+    if (!window->open || window->minimized) {
+        return;
+    }
+
+    fill_rect(window->x + 5, window->y + 6, window->width, window->height,
+              9, 15, 20);
+    fill_rect(window->x, window->y, window->width, window->height,
+              33, 47, 57);
+    fill_rect(window->x, window->y, window->width, WINDOW_TITLE_HEIGHT,
+              (i32)index == focused_window ? 17 : 25,
+              (i32)index == focused_window ? 25 : 36,
+              (i32)index == focused_window ? 33 : 46);
+    draw_text(window->x + 12, window->y + 10, "NOVA OS", 220, 230, 232);
+    draw_text(window->x + 112, window->y + 10, app_name(window->app), 157, 174, 181);
+
+    u32 minimize_x = window->x + window->width - 54;
+    u32 close_x = window->x + window->width - 28;
+    fill_rect(minimize_x, window->y + 5, 22, 18, 70, 87, 96);
+    fill_rect(minimize_x + 6, window->y + 14, 10, 2, 245, 247, 250);
+    fill_rect(close_x, window->y + 5, 22, 18, 134, 54, 58);
+    draw_text(close_x + 6, window->y + 10, "X", 250, 250, 250);
+
+    draw_app_panel(window->app, window->x, window->y + WINDOW_TITLE_HEIGHT,
+                   window->width, window->height - WINDOW_TITLE_HEIGHT);
 }
 
 void framebuffer_note_input(char character)
 {
-    if (active_app != APP_NOTES) {
+    if (focused_window < 0 || !app_windows[focused_window].open ||
+        app_windows[focused_window].app != APP_NOTES) {
         return;
     }
 
@@ -574,18 +767,7 @@ void framebuffer_note_input(char character)
         }
     }
 
-    u32 panel_x;
-    u32 panel_y;
-    u32 panel_width;
-    u32 panel_height;
-    get_app_panel_bounds(&panel_x, &panel_y, &panel_width, &panel_height);
-    draw_note_text(panel_x, panel_y, panel_width, panel_height);
-}
-
-static void clear_app_menu(void)
-{
-    fill_rect(160, 68, 480, 390, DESKTOP_RED, DESKTOP_GREEN, DESKTOP_BLUE);
-    draw_app_panel();
+    draw_app_window((u32)focused_window);
 }
 
 static void draw_app_menu(void)
@@ -612,7 +794,14 @@ void framebuffer_draw_desktop(void)
               DESKTOP_RED, DESKTOP_GREEN, DESKTOP_BLUE);
     draw_top_bar();
     draw_status_bar();
-    draw_app_panel();
+    for (u32 index = 0; index < MAX_APP_WINDOWS; ++index) {
+        if ((i32)index != focused_window) {
+            draw_app_window(index);
+        }
+    }
+    if (focused_window >= 0) {
+        draw_app_window((u32)focused_window);
+    }
     if (file_menu_open) {
         draw_app_menu();
     }
@@ -638,8 +827,9 @@ void framebuffer_draw_pointer_status(i32 x, i32 y)
     length = append_number(position, length, y < 0 ? 0u : (u32)y);
     position[length] = '\0';
 
-    fill_rect(framebuffer.width - 176, framebuffer.height - 28, 176, 28, 17, 25, 33);
-    draw_text(framebuffer.width - 164, framebuffer.height - 20,
+    fill_rect(framebuffer.width - 144, framebuffer.height - TASKBAR_HEIGHT,
+              144, TASKBAR_HEIGHT, 17, 25, 33);
+    draw_text(framebuffer.width - 136, framebuffer.height - 22,
               position, 157, 174, 181);
 }
 
@@ -654,18 +844,10 @@ void framebuffer_handle_click(i32 x, i32 y)
 {
     u32 power_x = framebuffer.width > 140 ? framebuffer.width - 128 : 252;
     if (x >= (i32)power_x && x < (i32)(power_x + 112) && y >= 4 && y < 36) {
-        if (file_menu_open) {
-            file_menu_open = 0;
-            clear_app_menu();
-        }
-        if (power_menu_open) {
-            power_menu_open = 0;
-            clear_power_menu();
-        } else {
-            power_menu_open = 1;
-            draw_power_menu();
-        }
-        draw_top_bar();
+        power_menu_open = !power_menu_open;
+        file_menu_open = 0;
+        redraw_desktop_region(power_x > 4 ? power_x - 4 : 0, 0, 196, 140);
+        redraw_desktop_region(0, 0, framebuffer.width, 40);
         return;
     }
 
@@ -676,23 +858,17 @@ void framebuffer_handle_click(i32 x, i32 y)
                 ? POWER_ACTION_RESTART
                 : POWER_ACTION_SHUTDOWN;
             power_menu_open = 0;
-            clear_power_menu();
-            draw_top_bar();
+            redraw_desktop_region(menu_x > 4 ? menu_x - 4 : 0, 0, 196, 140);
             return;
         }
         power_menu_open = 0;
-        clear_power_menu();
-        draw_top_bar();
+        redraw_desktop_region(menu_x > 4 ? menu_x - 4 : 0, 0, 196, 140);
     }
 
     if (x >= 148 && x < 244 && y >= 4 && y < 36) {
         file_menu_open = !file_menu_open;
-        draw_top_bar();
-        if (file_menu_open) {
-            draw_app_menu();
-        } else {
-            clear_app_menu();
-        }
+        redraw_desktop_region(0, 0, 252, 40);
+        redraw_app_drawer();
         return;
     }
 
@@ -701,60 +877,182 @@ void framebuffer_handle_click(i32 x, i32 y)
         y >= 126 && y < 374) {
         u32 row = (u32)(y - 126) / 88;
         u32 column = (u32)(x - (i32)drawer_x) < 236 ? 0 : 1;
+        u8 app = APP_DESKTOP;
         if (row == 0) {
-            active_app = column == 0 ? APP_FILES : APP_NOTES;
+            app = column == 0 ? APP_FILES : APP_NOTES;
         } else if (row == 1) {
-            active_app = column == 0 ? APP_CALCULATOR : APP_TERMINAL;
+            app = column == 0 ? APP_CALCULATOR : APP_TERMINAL;
         } else if (row == 2) {
-            active_app = column == 0 ? APP_ABOUT : APP_DESKTOP;
+            app = column == 0 ? APP_ABOUT : APP_DESKTOP;
         }
-        file_menu_open = 0;
-        clear_app_menu();
-        draw_top_bar();
-        draw_app_panel();
+        launch_app(app);
         return;
     }
 
     if (file_menu_open) {
         file_menu_open = 0;
-        clear_app_menu();
-        draw_top_bar();
+        redraw_app_drawer();
+        redraw_desktop_region(0, 0, 252, 40);
         return;
     }
 
-    u32 panel_x;
-    u32 panel_y;
-    u32 panel_width;
-    u32 panel_height;
-    get_app_panel_bounds(&panel_x, &panel_y, &panel_width, &panel_height);
-    if (active_app == APP_CALCULATOR &&
-        x >= (i32)(panel_x + 22) && x < (i32)(panel_x + panel_width - 22) &&
-        y >= (i32)(panel_y + 98) && y < (i32)(panel_y + 210)) {
-        static const char buttons[4][4] = {
-            {'7', '8', '9', '/'},
-            {'4', '5', '6', '*'},
-            {'1', '2', '3', '-'},
-            {'c', '0', '=', '+'}
-        };
-        u32 button_width = (panel_width - 44) / 4;
-        u32 column = (u32)(x - (i32)(panel_x + 22)) / button_width;
-        u32 button_offset_y = (u32)(y - (i32)(panel_y + 98));
-        u32 row = button_offset_y / 28;
-        if (row < 4 && column < 4 && button_offset_y % 28 < 24) {
-            calculator_input(buttons[row][column]);
-            draw_calculator(panel_x, panel_y, panel_width);
+    u32 bar_y = framebuffer.height - TASKBAR_HEIGHT;
+    if (y >= (i32)bar_y && x >= 76) {
+        u32 task_x = 76;
+        for (u32 index = 0; index < MAX_APP_WINDOWS; ++index) {
+            app_window_t *window = &app_windows[index];
+            if (!window->open) {
+                continue;
+            }
+            if (x >= (i32)task_x && x < (i32)(task_x + 76)) {
+                i32 old_focus = focused_window;
+                if ((i32)index == focused_window && !window->minimized) {
+                    window->minimized = 1;
+                    focused_window = -1;
+                    for (i32 other = MAX_APP_WINDOWS - 1; other >= 0; --other) {
+                        if (app_windows[other].open && !app_windows[other].minimized) {
+                            focused_window = other;
+                            break;
+                        }
+                    }
+                } else {
+                    window->minimized = 0;
+                    focused_window = (i32)index;
+                }
+                if (old_focus >= 0) {
+                    redraw_window_region((u32)old_focus);
+                }
+                redraw_window_region(index);
+                redraw_taskbar();
+                return;
+            }
+            task_x += 80;
+        }
+    }
+
+    for (i32 pass = 0; pass <= MAX_APP_WINDOWS; ++pass) {
+        i32 index = pass == 0 ? focused_window : (i32)MAX_APP_WINDOWS - pass;
+        if (index < 0 || index >= MAX_APP_WINDOWS || (pass != 0 && index == focused_window)) {
+            continue;
+        }
+        app_window_t *window = &app_windows[index];
+        if (!window->open || window->minimized ||
+            x < (i32)window->x || x >= (i32)(window->x + window->width) ||
+            y < (i32)window->y || y >= (i32)(window->y + window->height)) {
+            continue;
+        }
+
+        i32 old_focus = focused_window;
+        focused_window = index;
+        if (y < (i32)(window->y + WINDOW_TITLE_HEIGHT)) {
+            u32 close_x = window->x + window->width - 28;
+            u32 minimize_x = window->x + window->width - 54;
+            if (x >= (i32)close_x) {
+                window->open = 0;
+                if (focused_window == index) {
+                    focused_window = -1;
+                    for (i32 other = MAX_APP_WINDOWS - 1; other >= 0; --other) {
+                        if (app_windows[other].open && !app_windows[other].minimized) {
+                            focused_window = other;
+                            break;
+                        }
+                    }
+                }
+            } else if (x >= (i32)minimize_x) {
+                window->minimized = 1;
+                focused_window = -1;
+                for (i32 other = MAX_APP_WINDOWS - 1; other >= 0; --other) {
+                    if (app_windows[other].open && !app_windows[other].minimized) {
+                        focused_window = other;
+                        break;
+                    }
+                }
+            } else {
+                dragged_window = index;
+                drag_offset_x = x - (i32)window->x;
+                drag_offset_y = y - (i32)window->y;
+            }
+            if (old_focus >= 0 && old_focus != index) {
+                redraw_window_region((u32)old_focus);
+            }
+            redraw_window_region((u32)index);
+            if (focused_window >= 0 && focused_window != index && focused_window != old_focus) {
+                redraw_window_region((u32)focused_window);
+            }
+            redraw_taskbar();
+            return;
+        }
+
+        if (window->app == APP_CALCULATOR) {
+            u32 panel_y = window->y + WINDOW_TITLE_HEIGHT;
+            u32 panel_width = window->width;
+            if (x >= (i32)(window->x + 22) &&
+                x < (i32)(window->x + panel_width - 22) &&
+                y >= (i32)(panel_y + 98) && y < (i32)(panel_y + 210)) {
+                static const char buttons[4][4] = {
+                    {'7', '8', '9', '/'},
+                    {'4', '5', '6', '*'},
+                    {'1', '2', '3', '-'},
+                    {'c', '0', '=', '+'}
+                };
+                u32 button_width = (panel_width - 44) / 4;
+                u32 column = (u32)(x - (i32)(window->x + 22)) / button_width;
+                u32 button_offset_y = (u32)(y - (i32)(panel_y + 98));
+                u32 row = button_offset_y / 28;
+                if (row < 4 && column < 4 && button_offset_y % 28 < 24) {
+                    calculator_input(buttons[row][column]);
+                }
+                redraw_window_region((u32)index);
+                if (old_focus >= 0 && old_focus != index) {
+                    redraw_window_region((u32)old_focus);
+                }
+                redraw_taskbar();
+                return;
+            }
+        }
+        if (old_focus != index) {
+            if (old_focus >= 0) {
+                redraw_window_region((u32)old_focus);
+            }
+            redraw_window_region((u32)index);
+            redraw_taskbar();
         }
         return;
     }
-    if (active_app != APP_DESKTOP &&
-        x >= (i32)(panel_x + panel_width - 38) &&
-        x < (i32)(panel_x + panel_width - 14) &&
-        y >= (i32)(panel_y + 12) && y < (i32)(panel_y + 32)) {
-        active_app = APP_DESKTOP;
-        fill_rect(panel_x, panel_y, panel_width, panel_height,
-                  DESKTOP_RED, DESKTOP_GREEN, DESKTOP_BLUE);
-        draw_app_panel();
+
+    dragged_window = -1;
+}
+
+void framebuffer_pointer_move(i32 x, i32 y, u8 buttons)
+{
+    if (dragged_window < 0 || (buttons & 1u) == 0) {
+        if ((buttons & 1u) == 0) {
+            dragged_window = -1;
+        }
+        return;
     }
+
+    app_window_t *window = &app_windows[dragged_window];
+    u32 old_x = window->x;
+    u32 old_y = window->y;
+    u32 window_width = window->width;
+    u32 window_height = window->height;
+    i32 next_x = x - drag_offset_x;
+    i32 next_y = y - drag_offset_y;
+    i32 max_x = (i32)(framebuffer.width - window->width);
+    i32 max_y = (i32)(framebuffer.height - window->height - TASKBAR_HEIGHT);
+    if (next_x < 0) next_x = 0;
+    if (next_y < 40) next_y = 40;
+    if (next_x > max_x) next_x = max_x;
+    if (next_y > max_y) next_y = max_y;
+    if ((u32)next_x == old_x && (u32)next_y == old_y) {
+        return;
+    }
+
+    redraw_window_bounds(old_x, old_y, window_width, window_height);
+    window->x = (u32)next_x;
+    window->y = (u32)next_y;
+    redraw_window_region((u32)dragged_window);
 }
 
 void framebuffer_xor_cursor(i32 x, i32 y)

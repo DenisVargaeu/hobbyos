@@ -5,10 +5,17 @@ which loads the ELF64 kernel, creates identity mappings for the first 4 GiB,
 and switches the processor into long mode. The freestanding C kernel draws a
 graphical desktop using the RGB framebuffer supplied by GRUB.
 
-The desktop includes a boot splash, mouse-driven app drawer, Notes editor,
-four-operation calculator, Files/About/Terminal panels, and a Power menu with
-restart and shutdown actions. The white software cursor is controlled by the
-emulated PS/2 mouse. Keyboard input and mouse input use separate IRQ handlers.
+Current version: **1.2.0**. The version is shown on the boot splash and in About OS.
+
+The desktop includes a boot splash, navbar, app drawer, taskbar, and a basic
+window manager. Window operations redraw only the changed screen areas to keep
+the desktop steady while moving, focusing, opening, or closing windows. Files,
+Notes, Calculator, Terminal, and About OS can stay open in separate windows at
+the same time. Click a titlebar to focus and drag a window, use its minus button
+to minimize it, or its X button to close it.
+Notes and Calculator receive keyboard input when focused; the calculator also
+has a clickable keypad. The Power menu has restart and shutdown actions. The
+white software cursor is controlled by the emulated PS/2 mouse.
 
 ## Requirements
 
@@ -34,11 +41,10 @@ make run
 ```
 
 The bootable ISO is written to `build/hobby-os.iso`. `make clean` removes build
-outputs. QEMU's GTK window captures the pointer on hover. Open **APPS** to
-launch an app; in Notes, type normally. In Calculator, click the keypad or use
-number keys, `+`, `-`, `*`, `/`, `=`, and Backspace. **POWER** opens the restart
-and shutdown actions. Click the close control in an app window to return to the
-desktop.
+outputs. QEMU's GTK window captures the pointer on hover. Use **APPS** to launch
+several applications; their taskbar buttons switch between or minimize windows.
+In Calculator, use the on-screen keypad or number keys, `+`, `-`, `*`, `/`, `=`,
+and Backspace. **POWER** opens the restart and shutdown actions.
 
 ## Layout
 

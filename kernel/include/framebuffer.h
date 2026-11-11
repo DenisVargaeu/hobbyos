@@ -16,6 +16,7 @@ void framebuffer_draw_desktop(void);
 void framebuffer_draw_pointer_status(i32 x, i32 y);
 void framebuffer_note_input(char character);
 void framebuffer_calculator_input(char character);
+void framebuffer_pointer_move(i32 x, i32 y, u8 buttons);
 u8 framebuffer_take_power_action(void);
 void framebuffer_xor_cursor(i32 x, i32 y);
 void framebuffer_handle_click(i32 x, i32 y);
