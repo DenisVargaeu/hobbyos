@@ -45,7 +45,11 @@ static char note_text[256];
 static u32 note_length;
 static i32 selected_file = -1;
 static int file_editing;
+static int file_rename_mode;
 static int file_save_error;
+static char rename_buffer[FAT16_NAME_SIZE];
+static u32 rename_length;
+static int caret_visible = 1;
 static u32 new_file_serial = 1;
 static u32 file_scroll;
 static i32 calculator_value;
@@ -135,6 +139,21 @@ static void flush_cursor_region(i32 x, i32 y)
 
 static const u8 *glyph_rows(char character)
 {
+    static const u8 lowercase_glyphs[26][7] = {
+        {0, 0, 14, 1, 15, 17, 15}, {16, 16, 30, 17, 17, 17, 30},
+        {0, 0, 15, 16, 16, 16, 15}, {1, 1, 15, 17, 17, 17, 15},
+        {0, 0, 14, 17, 31, 16, 14}, {6, 9, 8, 28, 8, 8, 8},
+        {0, 15, 17, 17, 15, 1, 14}, {16, 16, 30, 17, 17, 17, 17},
+        {4, 0, 12, 4, 4, 4, 14}, {2, 0, 6, 2, 2, 18, 12},
+        {16, 16, 18, 20, 24, 20, 18}, {12, 4, 4, 4, 4, 4, 14},
+        {0, 0, 26, 21, 21, 21, 21}, {0, 0, 30, 17, 17, 17, 17},
+        {0, 0, 14, 17, 17, 17, 14}, {0, 30, 17, 17, 30, 16, 16},
+        {0, 15, 17, 17, 15, 1, 1}, {0, 0, 22, 25, 16, 16, 16},
+        {0, 0, 15, 16, 14, 1, 30}, {8, 8, 28, 8, 8, 9, 6},
+        {0, 0, 17, 17, 17, 19, 13}, {0, 0, 17, 17, 17, 10, 4},
+        {0, 0, 17, 17, 21, 21, 10}, {0, 0, 17, 10, 4, 10, 17},
+        {0, 17, 17, 17, 15, 1, 14}, {0, 0, 31, 2, 4, 8, 31}
+    };
     static const u8 glyphs[36][7] = {
         {14, 17, 17, 31, 17, 17, 17}, {30, 17, 17, 30, 17, 17, 30},
         {14, 17, 16, 16, 16, 17, 14}, {30, 17, 17, 17, 17, 17, 30},
@@ -163,12 +182,13 @@ static const u8 *glyph_rows(char character)
     static const u8 equals[7] = {0, 0, 31, 0, 31, 0, 0};
     static const u8 period[7] = {0, 0, 0, 0, 0, 12, 12};
     static const u8 comma[7] = {0, 0, 0, 0, 12, 12, 8};
+    static const u8 underscore[7] = {0, 0, 0, 0, 0, 0, 31};
 
-    if (character >= 'a' && character <= 'z') {
-        character = (char)(character - 'a' + 'A');
-    }
     if (character == ' ') {
         return space;
+    }
+    if (character >= 'a' && character <= 'z') {
+        return lowercase_glyphs[character - 'a'];
     }
     if (character >= '0' && character <= '9') {
         return glyphs[26 + character - '0'];
@@ -193,6 +213,9 @@ static const u8 *glyph_rows(char character)
     }
     if (character == ',') {
         return comma;
+    }
+    if (character == '_') {
+        return underscore;
     }
     if (character < 'A' || character > 'Z') {
         return space;
@@ -708,7 +731,9 @@ static void draw_note_text(u32 panel_x, u32 panel_y, u32 panel_width, u32 panel_
         draw_text(x, y, single_character, 220, 230, 232);
         x += 12;
     }
-    fill_rect(x, y + 15, 2, 12, 49, 175, 130);
+    if (caret_visible) {
+        fill_rect(x, y + 14, 3, 16, 245, 247, 250);
+    }
 }
 
 static void draw_app_tile(u32 x, u32 y, const char *name, char icon,
@@ -746,12 +771,19 @@ static void draw_files_panel(u32 panel_x, u32 panel_y,
         fat16_file_t *file = fat16_file_at((u32)selected_file);
         if (file == NULL) {
             file_editing = 0;
+            file_rename_mode = 0;
             selected_file = -1;
         } else {
             fill_rect(panel_x + 22, panel_y + 48, 62, 24, 49, 96, 85);
             draw_text(panel_x + 30, panel_y + 56, "BACK", 240, 244, 246);
-            draw_text(panel_x + 98, panel_y + 56, file->name, 220, 230, 232);
-            draw_text(panel_x + panel_width - 126, panel_y + 56,
+            fill_rect(panel_x + 90, panel_y + 48, 76, 24,
+                      file_rename_mode ? 49 : 31,
+                      file_rename_mode ? 96 : 44,
+                      file_rename_mode ? 85 : 55);
+            draw_text(panel_x + 98, panel_y + 56, "RENAME", 240, 244, 246);
+            draw_text(panel_x + 174, panel_y + 56,
+                      file_rename_mode ? rename_buffer : file->name, 220, 230, 232);
+            draw_text(panel_x + panel_width - 94, panel_y + 56,
                       file_save_error ? "SAVE ERROR" : "SAVED",
                       file_save_error ? 230 : 105,
                       file_save_error ? 105 : 220,
@@ -766,21 +798,32 @@ static void draw_files_panel(u32 panel_x, u32 panel_y,
             u32 y = editor_y + 8;
             u32 start_x = x;
             u32 bottom = editor_y + editor_height;
-            for (u32 index = 0; index < file->size && y + 14 < bottom; ++index) {
-                char character = file->data[index];
-                if (character == '\n' || x + 12 > editor_x + editor_width - 6) {
-                    x = start_x;
-                    y += 20;
-                    if (character == '\n') {
-                        continue;
+            if (file_rename_mode) {
+                fill_rect(editor_x + 6, editor_y + 6, editor_width - 12, 30,
+                          17, 25, 33);
+                draw_text(editor_x + 14, editor_y + 14, rename_buffer,
+                          245, 247, 250);
+                x = editor_x + 14 + rename_length * 12;
+                y = editor_y + 14;
+                draw_text(editor_x + 14, editor_y + 48,
+                          "TYPE NAME THEN ENTER TO SAVE", 157, 174, 181);
+            } else {
+                for (u32 index = 0; index < file->size && y + 14 < bottom; ++index) {
+                    char character = file->data[index];
+                    if (character == '\n' || x + 12 > editor_x + editor_width - 6) {
+                        x = start_x;
+                        y += 20;
+                        if (character == '\n') {
+                            continue;
+                        }
                     }
+                    char text[2] = {character, '\0'};
+                    draw_text(x, y, text, 220, 230, 232);
+                    x += 12;
                 }
-                char text[2] = {character, '\0'};
-                draw_text(x, y, text, 220, 230, 232);
-                x += 12;
             }
-            if (y + 14 < bottom) {
-                fill_rect(x, y + 15, 2, 12, 49, 175, 130);
+            if (caret_visible && y + 14 < bottom) {
+                fill_rect(x, y + 14, 3, 16, 245, 247, 250);
             }
             return;
         }
@@ -891,7 +934,6 @@ static void draw_app_window(u32 index)
     if (!window->open || window->minimized) {
         return;
     }
-
     fill_rect(window->x + 5, window->y + 6, window->width, window->height,
               9, 15, 20);
     fill_rect(window->x, window->y, window->width, window->height,
@@ -922,6 +964,7 @@ void framebuffer_note_input(char character)
         return;
     }
 
+    caret_visible = 1;
     if (character == '\b') {
         if (note_length != 0) {
             --note_length;
@@ -930,7 +973,10 @@ void framebuffer_note_input(char character)
     } else if (character == '\n' || character == ' ' ||
                (character >= 'a' && character <= 'z') ||
                (character >= 'A' && character <= 'Z') ||
-               (character >= '0' && character <= '9')) {
+               (character >= '0' && character <= '9') ||
+               character == ',' || character == '.' || character == '-' ||
+               character == '_' || character == '+' || character == '=' ||
+               character == '/' || character == '*') {
         if (note_length + 1 < sizeof(note_text)) {
             note_text[note_length++] = character;
             note_text[note_length] = '\0';
@@ -951,10 +997,50 @@ void framebuffer_file_input(char character)
         return;
     }
 
+    fat16_file_t *file = fat16_file_at((u32)selected_file);
+    if (file == NULL) {
+        file_editing = 0;
+        file_rename_mode = 0;
+        selected_file = -1;
+        return;
+    }
+
+    if (file_rename_mode) {
+        caret_visible = 1;
+        if (character == '\b') {
+            if (rename_length != 0) {
+                rename_buffer[--rename_length] = '\0';
+            }
+        } else if (character == '\n') {
+            if (fat16_rename((u32)selected_file, rename_buffer)) {
+                file_rename_mode = 0;
+                file_save_error = 0;
+            } else {
+                file_save_error = 1;
+            }
+        } else if ((character >= 'a' && character <= 'z') ||
+                   (character >= 'A' && character <= 'Z') ||
+                   (character >= '0' && character <= '9') ||
+                   character == '_' || character == '-' || character == '.') {
+            if (rename_length + 1 < sizeof(rename_buffer)) {
+                if (character >= 'a' && character <= 'z') {
+                    character = (char)(character - 'a' + 'A');
+                }
+                rename_buffer[rename_length++] = character;
+                rename_buffer[rename_length] = '\0';
+            }
+        }
+
+        draw_app_window((u32)focused_window);
+        flush_region(app_windows[focused_window].x, app_windows[focused_window].y,
+                     app_windows[focused_window].width + 6,
+                     app_windows[focused_window].height + 6);
+        return;
+    }
+
     int saved = 1;
     if (character == '\b') {
-        fat16_file_t *file = fat16_file_at((u32)selected_file);
-        if (file != NULL && file->size != 0) {
+        if (file->size != 0) {
             saved = fat16_backspace((u32)selected_file);
         }
     } else if (character != '\0') {
@@ -962,6 +1048,24 @@ void framebuffer_file_input(char character)
     }
     file_save_error = !saved;
 
+    caret_visible = 1;
+    draw_app_window((u32)focused_window);
+    flush_region(app_windows[focused_window].x, app_windows[focused_window].y,
+                 app_windows[focused_window].width + 6,
+                 app_windows[focused_window].height + 6);
+}
+
+void framebuffer_blink_caret(void)
+{
+    if (focused_window < 0 || !app_windows[focused_window].open) {
+        return;
+    }
+    u8 app = app_windows[focused_window].app;
+    if (app != APP_NOTES && !(app == APP_FILES && file_editing)) {
+        return;
+    }
+
+    caret_visible = !caret_visible;
     draw_app_window((u32)focused_window);
     flush_region(app_windows[focused_window].x, app_windows[focused_window].y,
                  app_windows[focused_window].width + 6,
@@ -1204,10 +1308,31 @@ void framebuffer_handle_click(i32 x, i32 y)
                     files_changed = 1;
                 }
             } else if (file_editing && selected_file >= 0) {
-                if (x >= (i32)(window->x + 22) && x < (i32)(window->x + 84) &&
+                if (x >= (i32)(window->x + 90) && x < (i32)(window->x + 166) &&
                     y >= (i32)(panel_y + 48) && y < (i32)(panel_y + 74)) {
-                    file_editing = 0;
-                    selected_file = -1;
+                    fat16_file_t *file = fat16_file_at((u32)selected_file);
+                    if (file != NULL) {
+                        u32 length = 0;
+                        while (file->name[length] != '\0' &&
+                               length + 1 < sizeof(rename_buffer)) {
+                            rename_buffer[length] = file->name[length];
+                            ++length;
+                        }
+                        rename_buffer[length] = '\0';
+                        rename_length = length;
+                        file_rename_mode = 1;
+                        file_save_error = 0;
+                        caret_visible = 1;
+                    }
+                    files_changed = 1;
+                } else if (x >= (i32)(window->x + 22) && x < (i32)(window->x + 84) &&
+                    y >= (i32)(panel_y + 48) && y < (i32)(panel_y + 74)) {
+                    if (file_rename_mode) {
+                        file_rename_mode = 0;
+                    } else {
+                        file_editing = 0;
+                        selected_file = -1;
+                    }
                     file_save_error = 0;
                     files_changed = 1;
                 }
@@ -1234,7 +1359,9 @@ void framebuffer_handle_click(i32 x, i32 y)
                     if (created >= 0) {
                         selected_file = created;
                         file_editing = 1;
+                        file_rename_mode = 0;
                         file_save_error = 0;
+                        caret_visible = 1;
                         files_changed = 1;
                     }
                 } else {
@@ -1260,7 +1387,9 @@ void framebuffer_handle_click(i32 x, i32 y)
                             fat16_file_at(file_index) != NULL) {
                             selected_file = (i32)file_index;
                             file_editing = 1;
+                            file_rename_mode = 0;
                             file_save_error = 0;
+                            caret_visible = 1;
                             files_changed = 1;
                         }
                     }

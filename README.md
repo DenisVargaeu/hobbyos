@@ -5,7 +5,7 @@ which loads the ELF64 kernel, creates identity mappings for the first 4 GiB,
 and switches the processor into long mode. The freestanding C kernel draws a
 graphical desktop using the RGB framebuffer supplied by GRUB.
 
-Current version: **1.7.0**. The version is shown on the boot splash and in About OS.
+Current version: **1.10.0**. The version is shown on the boot splash and in About OS.
 
 The desktop includes a boot splash, navbar, app drawer, taskbar, and a basic
 window manager. Changes are composed in a RAM backbuffer and only the finished
@@ -22,8 +22,11 @@ Files uses a FAT16 volume on a persistent 16 MiB IDE disk image. On first use,
 choose **MOUNT**; an unformatted disk then offers **FORMAT**. After formatting,
 choose **MOUNT** again. The FAT16 root supports up to 32 files with 8.3 names;
 the editor supports files up to 511 text bytes. Use **NEW** to create a file,
-select it to edit, and type; Backspace removes the previous character and Enter
-starts a new line. Changes are written to disk immediately and survive OS restarts. The image is
+select it to edit, and type; **RENAME** edits the 8.3 filename and Enter saves
+it. Shift and Caps Lock switch letter case, and lowercase and uppercase render
+distinctly. Backspace removes the previous character and Enter starts a new
+line. A blinking white caret marks the insertion point while editing.
+Changes are written to disk immediately and survive OS restarts. The image is
 `build/nova-storage.img`; `make clean` removes it, so copy it elsewhere first
 if you need to preserve its contents before cleaning the build directory.
 

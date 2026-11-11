@@ -541,6 +541,49 @@ int fat16_create(const char *name)
     return (int)index;
 }
 
+int fat16_rename(u32 index, const char *name)
+{
+    fat16_file_t *file = fat16_file_at(index);
+    if (!mounted || file == NULL || name == NULL) return 0;
+
+    u8 short_name[11];
+    if (!encode_name(name, short_name)) return 0;
+    for (u32 other_index = 0; other_index < file_count; ++other_index) {
+        if (other_index == index) continue;
+        u8 other_name[11];
+        if (!encode_name(files[other_index].name, other_name)) continue;
+        int same_name = 1;
+        for (u32 byte = 0; byte < 11; ++byte) {
+            if (other_name[byte] != short_name[byte]) {
+                same_name = 0;
+                break;
+            }
+        }
+        if (same_name) return 0;
+    }
+
+    u8 sector[SECTOR_SIZE];
+    if (!read_volume_sector(file->directory_sector, sector)) return 0;
+    u8 *entry = &sector[file->directory_offset];
+    for (u32 byte = 0; byte < 11; ++byte) {
+        entry[byte] = short_name[byte];
+    }
+    if (!write_volume_sector(file->directory_sector, sector)) return 0;
+
+    u32 output = 0;
+    for (u32 byte = 0; byte < 8 && short_name[byte] != ' '; ++byte) {
+        file->name[output++] = (char)short_name[byte];
+    }
+    if (short_name[8] != ' ') {
+        file->name[output++] = '.';
+        for (u32 byte = 8; byte < 11 && short_name[byte] != ' '; ++byte) {
+            file->name[output++] = (char)short_name[byte];
+        }
+    }
+    file->name[output] = '\0';
+    return 1;
+}
+
 int fat16_append(u32 index, char character)
 {
     fat16_file_t *file = fat16_file_at(index);

@@ -8,6 +8,7 @@ static volatile char key_queue[KEY_QUEUE_SIZE];
 static volatile u8 queue_read;
 static volatile u8 queue_write;
 static u8 shift_down;
+static u8 caps_lock;
 
 static const char keymap[128] = {
     [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4',
@@ -45,13 +46,19 @@ void keyboard_irq_handler(void)
         shift_down = 1;
     } else if (scancode == 0xAA || scancode == 0xB6) {
         shift_down = 0;
+    } else if (scancode == 0x3A) {
+        caps_lock = (u8)!caps_lock;
     } else if ((scancode & 0x80u) == 0 && scancode < 128) {
         char character = keymap[scancode];
         if (character != '\0') {
-            if (shift_down && character >= 'a' && character <= 'z') {
+            if (character >= 'a' && character <= 'z' && (shift_down ^ caps_lock)) {
                 character = (char)(character - 'a' + 'A');
-            } else if (shift_down && scancode == 0x0D) {
-                character = '+';
+            } else if (shift_down) {
+                if (scancode == 0x0C) character = '_';
+                else if (scancode == 0x0D) character = '+';
+                else if (scancode == 0x33) character = '<';
+                else if (scancode == 0x34) character = '>';
+                else if (scancode == 0x35) character = '?';
             }
             u8 next_write = (u8)((queue_write + 1u) % KEY_QUEUE_SIZE);
             if (next_write != queue_read) {

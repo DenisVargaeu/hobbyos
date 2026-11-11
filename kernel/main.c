@@ -86,12 +86,20 @@ void kernel_main(u32 magic, u32 multiboot_info_address)
     i32 cursor_y;
     mouse_get_position(&cursor_x, &cursor_y);
     u8 previous_buttons = mouse_get_buttons();
+    u32 last_caret_blink = interrupts_timer_ticks();
     framebuffer_draw_pointer_status(cursor_x, cursor_y);
     framebuffer_xor_cursor(cursor_x, cursor_y);
     interrupts_enable();
 
     for (;;) {
         __asm__ volatile ("hlt");
+        u32 current_ticks = interrupts_timer_ticks();
+        if ((u32)(current_ticks - last_caret_blink) >= 25) {
+            last_caret_blink = current_ticks;
+            framebuffer_xor_cursor(cursor_x, cursor_y);
+            framebuffer_blink_caret();
+            framebuffer_xor_cursor(cursor_x, cursor_y);
+        }
         i32 next_x;
         i32 next_y;
         char typed_character;

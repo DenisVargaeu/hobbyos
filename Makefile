@@ -4,7 +4,7 @@ BOOTSTRAP := $(BUILD_DIR)/boot32.elf
 KERNEL := $(BUILD_DIR)/kernel64.elf
 ISO := $(BUILD_DIR)/hobby-os.iso
 DISK := $(BUILD_DIR)/nova-storage.img
-VERSION := 1.7.0
+VERSION := 1.10.0
 
 CC := gcc
 LD := ld
@@ -15,7 +15,7 @@ CFLAGS := -m64 -std=gnu11 -O2 -Wall -Wextra -Werror -ffreestanding \
 		  -mno-red-zone -mgeneral-regs-only -mcmodel=small \
 		  -DNOVA_VERSION='"$(VERSION)"' -Ikernel
 C_SOURCES := kernel/main.c kernel/framebuffer.c kernel/interrupts.c kernel/ps2_mouse.c kernel/keyboard.c kernel/ata.c kernel/fat16.c
-ASM_SOURCES := kernel/mouse_irq.asm kernel/keyboard_irq.asm
+ASM_SOURCES := kernel/mouse_irq.asm kernel/keyboard_irq.asm kernel/timer_irq.asm
 C_OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SOURCES))
 ASM_OBJECTS := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SOURCES))
 BOOT_OBJECT := $(BUILD_DIR)/boot/entry32.o

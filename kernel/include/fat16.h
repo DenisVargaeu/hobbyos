@@ -27,6 +27,7 @@ int fat16_format(void);
 u32 fat16_file_count(void);
 fat16_file_t *fat16_file_at(u32 index);
 int fat16_create(const char *name);
+int fat16_rename(u32 index, const char *name);
 int fat16_append(u32 index, char character);
 int fat16_backspace(u32 index);
 
